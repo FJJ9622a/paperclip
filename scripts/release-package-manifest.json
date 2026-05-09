@@ -32,11 +32,7 @@
   {
     "dir": "packages/adapters/kubernetes-execution",
     "name": "@paperclipai/execution-target-kubernetes",
-<<<<<<< HEAD
     "publishFromCi": false
-=======
-    "publishFromCi": true
->>>>>>> bc7da057 (fix(release): add execution-target-kubernetes + workspace-strategy to release manifest)
   },
   {
     "dir": "packages/adapters/opencode-local",
@@ -66,7 +62,7 @@
   {
     "dir": "packages/workspace-strategy",
     "name": "@paperclipai/workspace-strategy",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/sdk",
