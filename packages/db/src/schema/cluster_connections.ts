@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, jsonb, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const clusterConnections = pgTable(
   "cluster_connections",
@@ -20,6 +21,8 @@ export const clusterConnections = pgTable(
     paperclipPublicUrl: text("paperclip_public_url"),
     imageRegistry: text("image_registry"),
     allowAgentImageOverride: text("allow_agent_image_override").notNull().default("false"),
+    /** Per-cluster image allow-list: image must string-start-with one of these prefixes. */
+    imageAllowlist: text("image_allowlist").array().notNull().default(sql`ARRAY[]::text[]`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     createdBy: text("created_by").notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
