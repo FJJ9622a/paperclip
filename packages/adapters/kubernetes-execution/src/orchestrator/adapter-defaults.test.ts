@@ -72,4 +72,14 @@ describe("adapter defaults registry", () => {
       expect.arrayContaining(["api.anthropic.com", "api.openai.com", "api.x.ai"]),
     );
   });
+
+  it("hermes_local registry entry exists with a runtime image (binary install is a follow-up)", () => {
+    const d = getAdapterDefaults("hermes_local");
+    expect(d.runtimeImage).toMatch(/agent-runtime-hermes/);
+    // Empty envKeys / allowFqdns until upstream binary lands; operators set
+    // their own via cluster_tenant_policies.networkJson.additionalAllowFqdns
+    // and the per-Job env Secret.
+    expect(d.envKeys).toEqual([]);
+    expect(d.allowFqdns).toEqual([]);
+  });
 });

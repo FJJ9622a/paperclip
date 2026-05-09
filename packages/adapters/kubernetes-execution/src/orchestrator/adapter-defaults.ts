@@ -61,6 +61,13 @@ export const ADAPTER_DEFAULTS: Record<string, AdapterDefaults> = {
     envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"],
     allowFqdns: ["api.anthropic.com", "api.openai.com", "api.x.ai"],
   },
+  hermes_local: {
+    runtimeImage: `${REGISTRY_BASE}/agent-runtime-hermes`,
+    // Empty defaults: no upstream npm binary identified yet. See
+    // Dockerfile.hermes for the gap and the path forward.
+    envKeys: [],
+    allowFqdns: [],
+  },
 };
 
 export function getAdapterDefaults(adapterType: string): AdapterDefaults {
