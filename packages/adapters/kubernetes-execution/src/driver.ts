@@ -322,10 +322,24 @@ export function createKubernetesExecutionDriver(deps: KubernetesDriverDeps): Kub
       const cancellation = buildRunCancellation(ctx);
       const { signal: cancelSignal } = cancellation;
 
-      // Image allow-list enforcement (M3b). Empty list preserves M2 behavior:
-      // the existing `allowAgentImageOverride` boolean (handled below) governs.
-      // Non-empty list requires both default + override to string-start-with
-      // one of the prefixes.
+      // Image policy enforcement.
+      //
+      // 1. allowAgentImageOverride (M2): when the connection forbids it,
+      //    a target.imageOverride is rejected outright — operators use this
+      //    to pin agents to the cluster-supplied default image.
+      // 2. imageAllowlist (M3b): when non-empty, runContext.image must
+      //    string-start-with one of the allowed prefixes. runContext.image
+      //    already equals target.imageOverride ?? adapterImage (set by
+      //    resolveRunContext), so a single check covers both default and
+      //    override cases.
+      if (target.imageOverride != null && !connection.allowAgentImageOverride) {
+        cancellation.dispose();
+        return {
+          exitCode: null, signal: null, timedOut: false,
+          errorCode: "image_override_not_allowed",
+          errorMessage: `Cluster connection does not permit agent image overrides`,
+        };
+      }
       const allowlist = connection.imageAllowlist ?? [];
       if (allowlist.length > 0) {
         const matchesAllowlist = (img: string): boolean =>
@@ -336,14 +350,6 @@ export function createKubernetesExecutionDriver(deps: KubernetesDriverDeps): Kub
             exitCode: null, signal: null, timedOut: false,
             errorCode: "image_not_allowed",
             errorMessage: `Adapter image "${runContext.image}" not in cluster image_allowlist`,
-          };
-        }
-        if (target.imageOverride != null && !matchesAllowlist(target.imageOverride)) {
-          cancellation.dispose();
-          return {
-            exitCode: null, signal: null, timedOut: false,
-            errorCode: "image_not_allowed",
-            errorMessage: `Override image "${target.imageOverride}" not in cluster image_allowlist`,
           };
         }
       }

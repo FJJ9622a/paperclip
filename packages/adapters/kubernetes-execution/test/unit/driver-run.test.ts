@@ -184,17 +184,26 @@ interface FakeDriverOptions {
    * Defaults to the same value as baseRunContext.image.
    */
   resolvedImage?: string;
+  /**
+   * Whether the cluster connection permits target.imageOverride. Defaults
+   * to true so allowlist-focused tests don't need to opt into override
+   * support every time; override-policy tests flip this to false to
+   * exercise the rejection path.
+   */
+  allowAgentImageOverride?: boolean;
 }
 
 function makeFakeDriver(opts: FakeDriverOptions = {}) {
   const {
     connectionImageAllowlist = [],
     resolvedImage = baseRunContext.image,
+    allowAgentImageOverride = true,
   } = opts;
 
   // Build a fake connection with the requested allowlist.
   const fakeConnection: ResolvedClusterConnection = {
     ...sampleConnection,
+    allowAgentImageOverride,
     imageAllowlist: connectionImageAllowlist,
   };
 
@@ -220,7 +229,14 @@ function makeFakeDriver(opts: FakeDriverOptions = {}) {
     bootstrapTokenMinter: {
       mint: async () => ({ token: "bst_fake", expiresAt: new Date(Date.now() + 600_000) }),
     },
-    resolveRunContext: async () => ({ ...baseRunContext, image: resolvedImage }),
+    // Mirror the real server-side resolveRunContext: when the target carries
+    // an imageOverride, runContext.image takes that value, otherwise it
+    // falls back to the cluster's adapter default. Tests that exercise the
+    // allowlist/override-policy paths rely on this mapping.
+    resolveRunContext: async ({ target }) => ({
+      ...baseRunContext,
+      image: target.imageOverride ?? resolvedImage,
+    }),
     pollIntervalMs: 5,
   });
 }
@@ -424,18 +440,54 @@ describe("KubernetesExecutionDriver.run()", () => {
     expect(result.errorCode).not.toBe("image_not_allowed");
   });
 
-  it("with empty allowlist preserves M2 behavior (allowAgentImageOverride alone governs)", async () => {
+  it("with empty allowlist and allowAgentImageOverride=true, override images are permitted", async () => {
     const driver = makeFakeDriver({
       connectionImageAllowlist: [],
+      allowAgentImageOverride: true,
       resolvedImage: "ghcr.io/paperclipai/agent-runtime-claude:v1",
     });
     const result = await driver.run({
       ctx: makeCtx(),
       target: { clusterConnectionId: "c-1", imageOverride: "anywhere/at/all:v1" },
     });
-    // With empty allowlist, the M3b enforcement is skipped. Whatever
-    // happens next is M2-era behavior — we only assert the new code path
-    // didn't fire.
+    expect(result.errorCode).not.toBe("image_not_allowed");
+    expect(result.errorCode).not.toBe("image_override_not_allowed");
+  });
+
+  it("rejects imageOverride when allowAgentImageOverride=false, regardless of allowlist", async () => {
+    // The override-policy boolean is the operator's hard pin on the
+    // cluster-supplied default image. It runs before the allowlist check,
+    // so even an override that would otherwise pass the allowlist is
+    // rejected.
+    const driver = makeFakeDriver({
+      connectionImageAllowlist: ["ghcr.io/paperclipai/"],
+      allowAgentImageOverride: false,
+      resolvedImage: "ghcr.io/paperclipai/agent-runtime-claude:v1",
+    });
+    const result = await driver.run({
+      ctx: makeCtx(),
+      target: {
+        clusterConnectionId: "c-1",
+        imageOverride: "ghcr.io/paperclipai/custom:v2",
+      },
+    });
+    expect(result.errorCode).toBe("image_override_not_allowed");
+  });
+
+  it("permits no-override runs even when allowAgentImageOverride=false", async () => {
+    // The override-policy boolean only gates target.imageOverride; absent
+    // an override, the default adapter image proceeds (and the allowlist
+    // check below still applies if non-empty).
+    const driver = makeFakeDriver({
+      connectionImageAllowlist: [],
+      allowAgentImageOverride: false,
+      resolvedImage: "ghcr.io/paperclipai/agent-runtime-claude:v1",
+    });
+    const result = await driver.run({
+      ctx: makeCtx(),
+      target: { clusterConnectionId: "c-1" },
+    });
+    expect(result.errorCode).not.toBe("image_override_not_allowed");
     expect(result.errorCode).not.toBe("image_not_allowed");
   });
 
