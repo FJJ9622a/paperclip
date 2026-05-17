@@ -205,6 +205,51 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(events)).not.toContain("runtime-secret");
   });
 
+  it("resolves routine env secret refs through routine bindings and records value-free access metadata", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `routine-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "routine-super-secret",
+    });
+    const env = {
+      ROUTINE_API_KEY: { type: "secret_ref" as const, secretId: secret.id, version: "latest" as const },
+    };
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "routine", targetId: "routine-1" }, env);
+
+    const resolved = await svc.resolveEnvBindings(companyId, env, {
+      consumerType: "routine",
+      consumerId: "routine-1",
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(resolved.env.ROUTINE_API_KEY).toBe("routine-super-secret");
+    expect(resolved.manifest).toEqual([
+      expect.objectContaining({
+        configPath: "env.ROUTINE_API_KEY",
+        envKey: "ROUTINE_API_KEY",
+        secretId: secret.id,
+        outcome: "success",
+      }),
+    ]);
+
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      secretId: secret.id,
+      consumerType: "routine",
+      consumerId: "routine-1",
+      configPath: "env.ROUTINE_API_KEY",
+      actorType: "agent",
+      actorId: "agent-1",
+      outcome: "success",
+    });
+    expect(JSON.stringify(events)).not.toContain("routine-super-secret");
+  });
+
   it("scopes env binding sync deletes to the env path prefix", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

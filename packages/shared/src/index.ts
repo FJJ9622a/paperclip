@@ -576,6 +576,7 @@ export type {
   SecretVersionSelector,
   SecretVersionStatus,
   Routine,
+  RoutineEnvConfig,
   RoutineManagedByPlugin,
   RoutineVariable,
   RoutineVariableDefaultValue,

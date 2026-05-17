@@ -18,6 +18,7 @@ import {
   type IssueExecutionMonitorPolicy,
   type IssueExecutionMonitorRecoveryPolicy,
   type ModelProfileKey,
+  type RoutineRevisionSnapshotV1,
   type RunLivenessState,
 } from "@paperclipai/shared";
 import {
@@ -40,6 +41,9 @@ import {
   issueWorkProducts,
   projects,
   projectWorkspaces,
+  routineRevisions,
+  routineRuns,
+  routines,
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -333,8 +337,10 @@ export async function resolveExecutionRunAdapterConfig(input: {
   issueId?: string | null;
   heartbeatRunId?: string | null;
   projectId?: string | null;
+  routineId?: string | null;
   executionRunConfig: Record<string, unknown>;
   projectEnv: unknown;
+  routineEnv?: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
 }) {
   const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
@@ -376,10 +382,39 @@ export async function resolveExecutionRunAdapterConfig(input: {
       secretKeys.add(key);
     }
   }
+  const routineEnvResolution = input.routineEnv
+    ? await input.secretsSvc.resolveEnvBindings(
+        input.companyId,
+        input.routineEnv,
+        input.routineId
+          ? {
+              consumerType: "routine",
+              consumerId: input.routineId,
+              actorType: "agent",
+              actorId: input.agentId ?? null,
+              issueId: input.issueId ?? null,
+              heartbeatRunId: input.heartbeatRunId ?? null,
+            }
+          : undefined,
+      )
+    : { env: {}, secretKeys: new Set<string>(), manifest: [] };
+  if (Object.keys(routineEnvResolution.env).length > 0) {
+    resolvedConfig.env = {
+      ...parseObject(resolvedConfig.env),
+      ...routineEnvResolution.env,
+    };
+    for (const key of routineEnvResolution.secretKeys) {
+      secretKeys.add(key);
+    }
+  }
   return {
     resolvedConfig,
     secretKeys,
-    secretManifest: [...(manifest ?? []), ...(projectEnvResolution.manifest ?? [])],
+    secretManifest: [
+      ...(manifest ?? []),
+      ...(projectEnvResolution.manifest ?? []),
+      ...(routineEnvResolution.manifest ?? []),
+    ],
   };
 }
 
@@ -2433,10 +2468,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
+        originKind: issues.originKind,
+        originId: issues.originId,
+        originRunId: issues.originRunId,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getRoutineEnvForExecutionIssue(
+    companyId: string,
+    issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null,
+  ) {
+    if (!issueContext || issueContext.originKind !== "routine_execution" || !issueContext.originId) {
+      return { routineId: null, env: null };
+    }
+
+    const routineRun = issueContext.originRunId
+      ? await db
+          .select({
+            routineRevisionId: routineRuns.routineRevisionId,
+          })
+          .from(routineRuns)
+          .where(
+            and(
+              eq(routineRuns.id, issueContext.originRunId),
+              eq(routineRuns.companyId, companyId),
+              eq(routineRuns.routineId, issueContext.originId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null)
+      : null;
+
+    if (routineRun?.routineRevisionId) {
+      const revision = await db
+        .select({
+          snapshot: routineRevisions.snapshot,
+        })
+        .from(routineRevisions)
+        .where(
+          and(
+            eq(routineRevisions.id, routineRun.routineRevisionId),
+            eq(routineRevisions.companyId, companyId),
+            eq(routineRevisions.routineId, issueContext.originId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      const snapshot = revision?.snapshot as RoutineRevisionSnapshotV1 | undefined;
+      if (snapshot?.version === 1) {
+        return { routineId: issueContext.originId, env: snapshot.routine.env ?? null };
+      }
+    }
+
+    const routine = await db
+      .select({ env: routines.env })
+      .from(routines)
+      .where(and(eq(routines.id, issueContext.originId), eq(routines.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    return { routineId: issueContext.originId, env: routine?.env ?? null };
   }
 
   async function getRuntimeState(agentId: string) {
@@ -6870,6 +6960,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    const routineEnvContext = await getRoutineEnvForExecutionIssue(agent.companyId, issueContext);
     const projectExecutionWorkspacePolicy = gateProjectExecutionWorkspacePolicy(
       parseProjectExecutionWorkspacePolicy(projectContext?.executionWorkspacePolicy),
       isolatedWorkspacesEnabled,
@@ -7074,8 +7165,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueId,
       heartbeatRunId: run.id,
       projectId: projectContext?.id ?? null,
+      routineId: routineEnvContext.routineId,
       executionRunConfig,
       projectEnv: projectContext?.env ?? null,
+      routineEnv: routineEnvContext.env,
       secretsSvc,
     });
     if (secretManifest.length > 0) {

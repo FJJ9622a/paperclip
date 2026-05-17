@@ -7,7 +7,7 @@ import {
 } from "../services/heartbeat.ts";
 
 describe("resolveExecutionRunAdapterConfig", () => {
-  it("overlays project env on top of agent env and unions secret keys", async () => {
+  it("overlays project and routine env on top of agent env and unions secret keys", async () => {
     const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
       config: {
         env: {
@@ -29,29 +29,51 @@ describe("resolveExecutionRunAdapterConfig", () => {
         },
       ],
     });
-    const resolveEnvBindings = vi.fn().mockResolvedValue({
-      env: {
-        SHARED_KEY: "project",
-        PROJECT_ONLY: "project-only",
-      },
-      secretKeys: new Set(["PROJECT_SECRET"]),
-      manifest: [
-        {
-          configPath: "env.PROJECT_SECRET",
-          envKey: "PROJECT_SECRET",
-          secretId: "secret-project",
-          secretKey: "project-secret",
-          version: 1,
-          provider: "local_encrypted",
-          outcome: "success",
+    const resolveEnvBindings = vi
+      .fn()
+      .mockResolvedValueOnce({
+        env: {
+          SHARED_KEY: "project",
+          PROJECT_ONLY: "project-only",
         },
-      ],
-    });
+        secretKeys: new Set(["PROJECT_SECRET"]),
+        manifest: [
+          {
+            configPath: "env.PROJECT_SECRET",
+            envKey: "PROJECT_SECRET",
+            secretId: "secret-project",
+            secretKey: "project-secret",
+            version: 1,
+            provider: "local_encrypted",
+            outcome: "success",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        env: {
+          SHARED_KEY: "routine",
+          ROUTINE_ONLY: "routine-only",
+        },
+        secretKeys: new Set(["ROUTINE_SECRET"]),
+        manifest: [
+          {
+            configPath: "env.ROUTINE_SECRET",
+            envKey: "ROUTINE_SECRET",
+            secretId: "secret-routine",
+            secretKey: "routine-secret",
+            version: 1,
+            provider: "local_encrypted",
+            outcome: "success",
+          },
+        ],
+      });
 
     const result = await resolveExecutionRunAdapterConfig({
       companyId: "company-1",
       executionRunConfig: { env: { SHARED_KEY: "agent" } },
       projectEnv: { SHARED_KEY: "project" },
+      routineEnv: { SHARED_KEY: "routine" },
+      routineId: "routine-1",
       secretsSvc: {
         resolveAdapterConfigForRuntime,
         resolveEnvBindings,
@@ -61,18 +83,25 @@ describe("resolveExecutionRunAdapterConfig", () => {
     expect(result.resolvedConfig).toMatchObject({
       other: "value",
       env: {
-        SHARED_KEY: "project",
+        SHARED_KEY: "routine",
         AGENT_ONLY: "agent-only",
         PROJECT_ONLY: "project-only",
+        ROUTINE_ONLY: "routine-only",
       },
     });
-    expect(Array.from(result.secretKeys).sort()).toEqual(["AGENT_SECRET", "PROJECT_SECRET"]);
+    expect(Array.from(result.secretKeys).sort()).toEqual(["AGENT_SECRET", "PROJECT_SECRET", "ROUTINE_SECRET"]);
     expect(result.secretManifest.map((entry) => entry.secretId).sort()).toEqual([
       "secret-agent",
       "secret-project",
+      "secret-routine",
     ]);
     expect(JSON.stringify(result.secretManifest)).not.toContain("agent-only");
     expect(JSON.stringify(result.secretManifest)).not.toContain("project-only");
+    expect(JSON.stringify(result.secretManifest)).not.toContain("routine-only");
+    expect(resolveEnvBindings.mock.calls[1]?.[2]).toMatchObject({
+      consumerType: "routine",
+      consumerId: "routine-1",
+    });
   });
 
   it("skips project env resolution when the project has no bindings", async () => {
