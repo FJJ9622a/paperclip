@@ -693,6 +693,29 @@ describe.sequential("plugin tool and bridge authz", () => {
     });
   });
 
+  it("uses null for board actor userId when no authenticated user id is present", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor({ userId: undefined }), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", expect.objectContaining({
+      actorContext: expect.objectContaining({
+        type: "user",
+        userId: null,
+        companyId: companyA,
+      }),
+    }));
+  });
+
   it("allows agent-scoped plugin actions with authenticated actor context", async () => {
     readyPlugin();
     const call = vi.fn().mockResolvedValue({ ok: true });

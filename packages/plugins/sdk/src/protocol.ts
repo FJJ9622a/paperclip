@@ -227,6 +227,8 @@ export const PLUGIN_RPC_ERROR_CODES = {
   TIMEOUT: -32003,
   /** The worker does not implement the requested optional method. */
   METHOD_NOT_IMPLEMENTED: -32004,
+  /** The worker→host call attempted to escape the current invocation company scope. */
+  INVOCATION_SCOPE_DENIED: -32005,
   /** A catch-all for errors that do not fit other categories. */
   UNKNOWN: -32099,
 } as const;

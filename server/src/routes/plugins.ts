@@ -586,7 +586,7 @@ export function pluginRoutes(
     if (req.actor.type === "board") {
       return {
         type: "user",
-        userId: req.actor.userId ?? "board",
+        userId: req.actor.userId ?? null,
         agentId: null,
         runId: req.actor.runId ?? null,
         companyId: scopedCompanyId,
@@ -1018,6 +1018,12 @@ export function pluginRoutes(
         case PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED:
           return {
             code: "CAPABILITY_DENIED",
+            message: err.message,
+            details: err.data,
+          };
+        case PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED:
+          return {
+            code: "INVOCATION_SCOPE_DENIED",
             message: err.message,
             details: err.data,
           };
@@ -1641,7 +1647,10 @@ export function pluginRoutes(
     } catch (err) {
       const status = typeof (err as { status?: unknown }).status === "number"
         ? (err as { status: number }).status
-        : err instanceof JsonRpcCallError && err.code === PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED
+        : err instanceof JsonRpcCallError && (
+          err.code === PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED ||
+          err.code === PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED
+        )
           ? 403
           : err instanceof JsonRpcCallError && err.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
             ? 501
