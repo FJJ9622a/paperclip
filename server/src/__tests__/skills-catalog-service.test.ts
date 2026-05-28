@@ -3,6 +3,7 @@ import type { CatalogSkill } from "@paperclipai/shared";
 
 const mockExistsSync = vi.hoisted(() => vi.fn());
 const mockReadFileSync = vi.hoisted(() => vi.fn());
+const mockStatSync = vi.hoisted(() => vi.fn());
 const mockReadFile = vi.hoisted(() => vi.fn());
 
 vi.doMock("node:fs", async () => {
@@ -11,6 +12,7 @@ vi.doMock("node:fs", async () => {
     ...actual,
     existsSync: mockExistsSync,
     readFileSync: mockReadFileSync,
+    statSync: mockStatSync,
     promises: {
       ...actual.promises,
       readFile: mockReadFile,
@@ -52,28 +54,40 @@ function manifest(skills: CatalogSkill[], packageVersion = "0.3.1") {
 
 describe("skills catalog service", () => {
   let manifestJson: string;
+  let manifestMtimeMs: number;
 
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
     manifestJson = manifest([catalogSkill("old-skill", "Old Skill")]);
+    manifestMtimeMs = 1;
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockImplementation(() => manifestJson);
+    mockStatSync.mockImplementation(() => ({
+      mtimeMs: manifestMtimeMs,
+      size: Buffer.byteLength(manifestJson),
+    }));
     mockReadFile.mockImplementation(async (filePath: string) => `content:${filePath}`);
   });
 
-  it("reloads the generated catalog manifest between requests", async () => {
+  it("caches and reloads the generated catalog manifest when it changes", async () => {
     const service = await import("../services/skills-catalog.js");
 
     expect(service.listCatalogSkills().map((skill) => skill.key)).toEqual([
       "paperclipai/bundled/software-development/old-skill",
     ]);
+    expect(service.listCatalogSkills().map((skill) => skill.key)).toEqual([
+      "paperclipai/bundled/software-development/old-skill",
+    ]);
+    expect(mockReadFileSync).toHaveBeenCalledTimes(1);
 
     manifestJson = manifest([catalogSkill("new-skill", "New Skill")], "0.3.2");
+    manifestMtimeMs += 1;
 
     expect(service.listCatalogSkills().map((skill) => skill.key)).toEqual([
       "paperclipai/bundled/software-development/new-skill",
     ]);
+    expect(mockReadFileSync).toHaveBeenCalledTimes(2);
     expect(() => service.getCatalogSkillOrThrow("old-skill")).toThrow("Catalog skill not found");
     expect(service.getCatalogPackageMetadata()).toEqual({
       packageName: "@paperclipai/skills-catalog",

@@ -24,6 +24,7 @@ function contentHash(files: CatalogSkillFile[]) {
 
 const sampleSkillMarkdown = "---\nname: review\n---\n\n# Review\n";
 const sampleReferenceMarkdown = "# Checklist\n";
+const sampleAssetBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x10]);
 const sampleFiles: CatalogSkillFile[] = [
   { path: "SKILL.md", kind: "skill", sizeBytes: Buffer.byteLength(sampleSkillMarkdown), sha256: sha256(sampleSkillMarkdown) },
   { path: "references/checklist.md", kind: "reference", sizeBytes: Buffer.byteLength(sampleReferenceMarkdown), sha256: sha256(sampleReferenceMarkdown) },
@@ -56,6 +57,7 @@ const mockCatalogService = vi.hoisted(() => ({
   })),
   getCatalogSkillOrThrow: vi.fn(),
   readCatalogSkillFile: vi.fn(),
+  copyCatalogSkillFile: vi.fn(),
 }));
 
 vi.doMock("../services/skills-catalog.js", () => mockCatalogService);
@@ -112,6 +114,10 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
       language: "markdown",
       markdown: true,
     }));
+    mockCatalogService.copyCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string, targetPath: string) => {
+      const content = filePath === "SKILL.md" ? sampleSkillMarkdown : sampleReferenceMarkdown;
+      await fs.writeFile(targetPath, content, "utf8");
+    });
   });
 
   afterEach(async () => {
@@ -159,6 +165,35 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
     });
     await expect(fs.readFile(path.join(result.skill.sourceLocator!, "SKILL.md"), "utf8")).resolves.toBe(sampleSkillMarkdown);
     await expect(fs.readFile(path.join(result.skill.sourceLocator!, "references/checklist.md"), "utf8")).resolves.toBe(sampleReferenceMarkdown);
+  });
+
+  it("materializes catalog asset files without UTF-8 rewriting", async () => {
+    const assetFiles: CatalogSkillFile[] = [
+      ...sampleFiles,
+      { path: "assets/logo.png", kind: "asset", sizeBytes: sampleAssetBytes.length, sha256: sha256(sampleAssetBytes) },
+    ];
+    const assetCatalogSkill: CatalogSkill = {
+      ...sampleCatalogSkill,
+      trustLevel: "assets",
+      files: assetFiles,
+      contentHash: contentHash(assetFiles),
+    };
+    mockCatalogService.getCatalogSkillOrThrow.mockReturnValue(assetCatalogSkill);
+    mockCatalogService.copyCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string, targetPath: string) => {
+      if (filePath === "assets/logo.png") {
+        await fs.writeFile(targetPath, sampleAssetBytes);
+        return;
+      }
+      const content = filePath === "SKILL.md" ? sampleSkillMarkdown : sampleReferenceMarkdown;
+      await fs.writeFile(targetPath, content, "utf8");
+    });
+    const companyId = await createCompany();
+
+    const result = await svc.installFromCatalog(companyId, {
+      catalogSkillId: assetCatalogSkill.id,
+    });
+
+    await expect(fs.readFile(path.join(result.skill.sourceLocator!, "assets/logo.png"))).resolves.toEqual(sampleAssetBytes);
   });
 
   it("restores portable catalog provenance when importing packaged skills", async () => {

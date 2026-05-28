@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,11 @@ const serviceDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(serviceDir, "../../..");
 const catalogPackageRoot = path.join(repoRoot, "packages/skills-catalog");
 const catalogManifestPath = path.join(catalogPackageRoot, "generated/catalog.json");
+let cachedCatalogManifest: {
+  manifest: CatalogManifestFile;
+  mtimeMs: number;
+  size: number;
+} | null = null;
 
 function loadCatalogManifest(): CatalogManifestFile {
   if (!existsSync(catalogManifestPath)) {
@@ -30,7 +35,27 @@ function loadCatalogManifest(): CatalogManifestFile {
 }
 
 function getCatalogManifest() {
-  return loadCatalogManifest();
+  if (!existsSync(catalogManifestPath)) {
+    throw new Error(
+      `Skills catalog manifest not found at ${catalogManifestPath}. Run pnpm --filter @paperclipai/skills-catalog build:manifest.`,
+    );
+  }
+  const stats = statSync(catalogManifestPath);
+  if (
+    cachedCatalogManifest &&
+    cachedCatalogManifest.mtimeMs === stats.mtimeMs &&
+    cachedCatalogManifest.size === stats.size
+  ) {
+    return cachedCatalogManifest.manifest;
+  }
+
+  const manifest = loadCatalogManifest();
+  cachedCatalogManifest = {
+    manifest,
+    mtimeMs: stats.mtimeMs,
+    size: stats.size,
+  };
+  return manifest;
 }
 
 function getCatalogSkills() {
@@ -150,6 +175,24 @@ export async function readCatalogSkillFile(
     language: inferLanguageFromPath(normalizedPath),
     markdown: isMarkdownPath(normalizedPath),
   };
+}
+
+export async function copyCatalogSkillFile(reference: string, relativePath: string, targetPath: string): Promise<void> {
+  const skill = getCatalogSkillOrThrow(reference);
+  const normalizedPath = normalizePortablePath(relativePath || "SKILL.md");
+  const fileEntry = skill.files.find((entry) => entry.path === normalizedPath);
+  if (!fileEntry) {
+    throw notFound("Catalog skill file not found");
+  }
+
+  const packageRoot = resolveCatalogPackageRoot();
+  const absolutePath = path.resolve(packageRoot, skill.path, normalizedPath);
+  const skillRoot = path.resolve(packageRoot, skill.path);
+  if (absolutePath !== skillRoot && !absolutePath.startsWith(`${skillRoot}${path.sep}`)) {
+    throw notFound("Catalog skill file not found");
+  }
+
+  await fs.copyFile(absolutePath, targetPath);
 }
 
 export function getCatalogPackageMetadata() {

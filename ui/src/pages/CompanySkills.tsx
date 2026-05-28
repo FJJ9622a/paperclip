@@ -322,7 +322,7 @@ function classifySource(skill: { sourceBadge: CompanySkillSourceBadge; sourceTyp
     const kind = readonlyMetadataKind(skill.metadata);
     if (kind === "bundled") return "bundled";
     if (kind === "optional") return "optional";
-    return "bundled";
+    return "company";
   }
   if (skill.sourceBadge === "github" || skill.sourceBadge === "skills_sh" || skill.sourceBadge === "url" || skill.sourceBadge === "local") {
     return "external";

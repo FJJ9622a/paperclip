@@ -40,6 +40,7 @@ import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import {
+  copyCatalogSkillFile,
   getCatalogPackageMetadata,
   getCatalogSkillOrThrow,
   readCatalogSkillFile,
@@ -2817,13 +2818,12 @@ export function companySkillService(db: Db) {
     await fs.mkdir(skillDir, { recursive: true });
 
     for (const entry of catalogSkill.files) {
-      const detail = await readCatalogSkillFile(catalogSkill.id, entry.path);
       const targetPath = path.resolve(skillDir, entry.path);
       if (targetPath !== skillDir && !targetPath.startsWith(`${skillDir}${path.sep}`)) {
         throw unprocessable(`Catalog file path is invalid: ${entry.path}`);
       }
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs.writeFile(targetPath, detail.content, "utf8");
+      await copyCatalogSkillFile(catalogSkill.id, entry.path, targetPath);
     }
 
     return skillDir;
@@ -2844,13 +2844,12 @@ export function companySkillService(db: Db) {
     await fs.mkdir(snapshotDir, { recursive: true });
 
     for (const entry of catalogSkill.files) {
-      const detail = await readCatalogSkillFile(catalogSkill.id, entry.path);
       const targetPath = path.resolve(snapshotDir, entry.path);
       if (targetPath !== snapshotDir && !targetPath.startsWith(`${snapshotDir}${path.sep}`)) {
         throw unprocessable(`Catalog file path is invalid: ${entry.path}`);
       }
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs.writeFile(targetPath, detail.content, "utf8");
+      await copyCatalogSkillFile(catalogSkill.id, entry.path, targetPath);
     }
 
     return snapshotDir;
