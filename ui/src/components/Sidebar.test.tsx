@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -90,14 +90,12 @@ vi.mock("./SidebarAgents", () => ({
   SidebarAgents: () => null,
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
 async function flushReact() {
-  await act(async () => {
+  for (let index = 0; index < 5; index += 1) {
     await Promise.resolve();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
-  });
+  }
+  flushSync(() => {});
 }
 
 describe("Sidebar", () => {
@@ -109,7 +107,7 @@ describe("Sidebar", () => {
       defaultOptions: { queries: { retry: false } },
     });
 
-    await act(async () => {
+    flushSync(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <Sidebar />
@@ -142,7 +140,7 @@ describe("Sidebar", () => {
     const workLinks = [...container.querySelectorAll("nav a")].map((anchor) => anchor.textContent?.trim());
     expect(workLinks).not.toContain("Search");
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -159,7 +157,7 @@ describe("Sidebar", () => {
     expect(workSectionContainer?.textContent).toContain("Issues");
     expect(workSectionContainer?.textContent).toContain("Goals");
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -181,7 +179,7 @@ describe("Sidebar", () => {
     expect(primaryNavText).toContain("Inbox");
     expect(primaryNavText).not.toContain("Plugin slot outlet");
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -192,7 +190,7 @@ describe("Sidebar", () => {
 
     expect(container.textContent).not.toContain("Workspaces");
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -211,7 +209,7 @@ describe("Sidebar", () => {
     expect(navText).toContain("Artifacts");
     expect(navText.indexOf("Goals")).toBeLessThan(navText.indexOf("Artifacts"));
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -223,7 +221,7 @@ describe("Sidebar", () => {
     const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Workspaces");
     expect(link?.getAttribute("href")).toBe("/workspaces");
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
