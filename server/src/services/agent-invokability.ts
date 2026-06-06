@@ -1,12 +1,13 @@
 import type { Db } from "@paperclipai/db";
 import { agents } from "@paperclipai/db";
+import { getAgentWorkEligibility, type AgentEligibilityAgent, type AgentOrgChainHealth } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 
 type AgentStatus = (typeof agents.$inferSelect)["status"];
 
 export type AgentOrgRow = Pick<
   typeof agents.$inferSelect,
-  "id" | "companyId" | "reportsTo" | "status"
+  "id" | "companyId" | "name" | "reportsTo" | "status"
 >;
 
 export type AgentInvokabilityBlockReason =
@@ -52,6 +53,22 @@ function statusBlockReason(status: AgentStatus): AgentInvokabilityBlockReason | 
   return null;
 }
 
+function toEligibilityAgent(row: AgentOrgRow): AgentEligibilityAgent {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    name: row.name,
+    status: row.status,
+    reportsTo: row.reportsTo,
+  };
+}
+
+function invalidChainReason(health: AgentOrgChainHealth): AgentInvokabilityBlockReason {
+  if (health.reason === "terminated_ancestor") return "manager_terminated";
+  if (health.reason === "cycle") return "reporting_cycle";
+  return "manager_missing";
+}
+
 export function evaluateAgentInvokability(
   agent: AgentOrgRow | null | undefined,
   companyAgents: AgentOrgRow[],
@@ -59,6 +76,13 @@ export function evaluateAgentInvokability(
   if (!agent) {
     return blocked("missing", "Agent no longer exists", {}, false);
   }
+
+  const eligibility = getAgentWorkEligibility({
+    agent: toEligibilityAgent(agent),
+    agents: companyAgents.map(toEligibilityAgent),
+  });
+
+  if (eligibility.invokable) return { invokable: true };
 
   const directStatusReason = statusBlockReason(agent.status);
   if (directStatusReason) {
@@ -70,68 +94,22 @@ export function evaluateAgentInvokability(
     );
   }
 
-  const byId = new Map(companyAgents.map((row) => [row.id, row]));
-  const visited = new Set<string>([agent.id]);
-  const reportingChainAgentIds: string[] = [];
-  let managerId = agent.reportsTo;
-
-  while (managerId) {
-    if (visited.has(managerId)) {
-      return blocked(
-        "reporting_cycle",
-        "Agent is not invokable because its reporting chain is invalid",
-        { agentId: agent.id, managerId, reportingChainAgentIds },
-        true,
-      );
-    }
-    visited.add(managerId);
-
-    if (reportingChainAgentIds.length >= 100) {
-      return blocked(
-        "reporting_chain_too_deep",
-        "Agent is not invokable because its reporting chain is invalid",
-        { agentId: agent.id, reportingChainAgentIds },
-        true,
-      );
-    }
-
-    const manager = byId.get(managerId);
-    if (!manager) {
-      return blocked(
-        "manager_missing",
-        "Agent is not invokable because its reporting chain is invalid",
-        { agentId: agent.id, managerId, reportingChainAgentIds },
-        true,
-      );
-    }
-
-    reportingChainAgentIds.push(manager.id);
-    if (manager.companyId !== agent.companyId) {
-      return blocked(
-        "manager_company_mismatch",
-        "Agent is not invokable because its reporting chain is invalid",
-        { agentId: agent.id, managerId: manager.id, managerCompanyId: manager.companyId },
-        true,
-      );
-    }
-    if (manager.status === "terminated") {
-      return blocked(
-        "manager_terminated",
-        "Agent is not invokable because its reporting chain is invalid",
-        {
-          agentId: agent.id,
-          managerId: manager.id,
-          managerStatus: manager.status,
-          reportingChainAgentIds,
-        },
-        true,
-      );
-    }
-
-    managerId = manager.reportsTo;
-  }
-
-  return { invokable: true };
+  const health = eligibility.orgChainHealth;
+  const firstInvalidAncestor = health.firstInvalidAncestor;
+  return blocked(
+    invalidChainReason(health),
+    "Agent is not invokable because its reporting chain is invalid",
+    {
+      agentId: agent.id,
+      managerId: firstInvalidAncestor?.id ?? null,
+      managerStatus: firstInvalidAncestor?.status ?? null,
+      reportingChainAgentIds: health.fullChain
+        .filter((entry) => entry.relation === "ancestor")
+        .map((entry) => entry.id),
+      orgChainHealth: health,
+    },
+    true,
+  );
 }
 
 export async function evaluateAgentInvokabilityFromDb(
@@ -143,6 +121,7 @@ export async function evaluateAgentInvokabilityFromDb(
     .select({
       id: agents.id,
       companyId: agents.companyId,
+      name: agents.name,
       reportsTo: agents.reportsTo,
       status: agents.status,
     })

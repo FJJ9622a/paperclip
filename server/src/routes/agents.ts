@@ -2851,7 +2851,14 @@ export function agentRoutes(
   router.post("/agents/:id/resume", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    if (!(await getAccessibleAgent(req, res, id))) {
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) {
+      return;
+    }
+    if (existing.orgChainHealth?.status === "invalid_org_chain") {
+      res.status(409).json({
+        error: existing.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before resuming it",
+      });
       return;
     }
     const agent = await svc.resume(id);
@@ -3085,6 +3092,12 @@ export function agentRoutes(
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
+    if (agent.orgChainHealth?.status === "invalid_org_chain") {
+      res.status(409).json({
+        error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
+      });
+      return;
+    }
 
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
@@ -3152,6 +3165,12 @@ export function agentRoutes(
       }
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    }
+    if (agent.orgChainHealth?.status === "invalid_org_chain") {
+      res.status(409).json({
+        error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
+      });
+      return;
     }
 
     const body = (req.body ?? {}) as Partial<{
