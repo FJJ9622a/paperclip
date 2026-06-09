@@ -6,6 +6,7 @@ import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agents,
   documents,
   executionWorkspaces,
   heartbeatRuns,
@@ -1430,46 +1431,6 @@ export function issueRoutes(
     };
   }
 
-  function queueAnnotationCommentWakeup(input: {
-    issue: { id: string; assigneeAgentId: string | null; status: string };
-    actor: { actorType: "user" | "agent"; actorId: string };
-    threadId: string;
-    commentId: string;
-    documentKey: string;
-  }) {
-    const assigneeId = input.issue.assigneeAgentId;
-    const selfComment = input.actor.actorType === "agent" && input.actor.actorId === assigneeId;
-    if (!assigneeId || selfComment || isClosedIssueStatus(input.issue.status)) return;
-    void heartbeat.wakeup(assigneeId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: "issue_commented",
-      payload: {
-        issueId: input.issue.id,
-        annotationThreadId: input.threadId,
-        annotationCommentId: input.commentId,
-        documentKey: input.documentKey,
-        mutation: "document_annotation_comment",
-      },
-      requestedByActorType: input.actor.actorType,
-      requestedByActorId: input.actor.actorId,
-      contextSnapshot: {
-        issueId: input.issue.id,
-        taskId: input.issue.id,
-        annotationThreadId: input.threadId,
-        annotationCommentId: input.commentId,
-        documentKey: input.documentKey,
-        source: "issue.document.annotation",
-        wakeReason: "issue_commented",
-      },
-    }).catch((err) => logger.warn({
-      err,
-      issueId: input.issue.id,
-      annotationThreadId: input.threadId,
-      annotationCommentId: input.commentId,
-    }, "failed to wake assignee on document annotation comment"));
-  }
-
   async function canonicalizePaperclipArtifactMetadata(input: {
     issue: { id: string; companyId: string };
     metadata: Record<string, unknown> | null | undefined;
@@ -1926,6 +1887,55 @@ export function issueRoutes(
     return false;
   }
 
+  async function loadWorkProductRunAttribution(runId: string) {
+    return await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        agentCompanyId: agents.companyId,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function resolveWorkProductCreatedByRunId(
+    req: Request,
+    res: Response,
+    companyId: string,
+    input: { createdByRunId?: string | null },
+    mode: "create" | "update",
+  ): Promise<string | null | undefined> {
+    const hasCreatedByRunId = Object.prototype.hasOwnProperty.call(input, "createdByRunId");
+    if (mode === "update" && !hasCreatedByRunId) return undefined;
+
+    const requestedRunId = input.createdByRunId ?? null;
+    if (req.actor.type === "agent") {
+      const actorRunId = req.actor.runId?.trim() || null;
+      if (requestedRunId && requestedRunId !== actorRunId) {
+        res.status(403).json({ error: "createdByRunId must match the authenticated agent run" });
+        return undefined;
+      }
+      if (!actorRunId) return requestedRunId;
+      const run = await loadWorkProductRunAttribution(actorRunId);
+      if (!run || run.companyId !== companyId || run.agentCompanyId !== companyId || run.agentId !== req.actor.agentId) {
+        res.status(403).json({ error: "createdByRunId is not valid for this work product actor" });
+        return undefined;
+      }
+      return actorRunId;
+    }
+
+    if (!requestedRunId) return null;
+    const run = await loadWorkProductRunAttribution(requestedRunId);
+    if (!run || run.companyId !== companyId || run.agentCompanyId !== companyId) {
+      res.status(403).json({ error: "createdByRunId is not valid for this company" });
+      return undefined;
+    }
+    return requestedRunId;
+  }
+
   function assertStructuredCommentFieldsAllowed(
     req: Request,
     res: Response,
@@ -2115,6 +2125,18 @@ export function issueRoutes(
     }
     if (!resolved.agent) {
       throw notFound("Agent not found");
+    }
+    if (resolved.agent.status === "pending_approval") {
+      throw conflict("Cannot assign work to pending approval agents");
+    }
+    if (resolved.agent.status === "terminated") {
+      throw conflict("Cannot assign work to terminated agents");
+    }
+    if (resolved.agent.orgChainHealth?.status === "invalid_org_chain") {
+      throw conflict(
+        resolved.agent.orgChainHealth?.repairGuidance ??
+          "Cannot assign work to agents with invalid org chains",
+      );
     }
     return resolved.agent.id;
   }
@@ -3073,16 +3095,6 @@ export function issueRoutes(
         },
       });
 
-      if (firstComment) {
-        queueAnnotationCommentWakeup({
-          issue,
-          actor,
-          threadId: thread.id,
-          commentId: firstComment.id,
-          documentKey: thread.documentKey,
-        });
-      }
-
       res.status(201).json(thread);
     },
   );
@@ -3163,14 +3175,6 @@ export function issueRoutes(
             currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
           }),
         },
-      });
-
-      queueAnnotationCommentWakeup({
-        issue,
-        actor,
-        threadId: comment.threadId,
-        commentId: comment.id,
-        documentKey: keyParsed.data,
       });
 
       res.status(201).json(comment);
@@ -3669,6 +3673,9 @@ export function issueRoutes(
       projectId: req.body.projectId ?? issue.projectId ?? null,
       sourceTrust: await sourceTrustForActorWrite(issue, actor),
     };
+    const createdByRunId = await resolveWorkProductCreatedByRunId(req, res, issue.companyId, req.body, "create");
+    if (createdByRunId === undefined) return;
+    createInput.createdByRunId = createdByRunId;
     if (requiresPaperclipAttachmentMetadata(createInput)) {
       createInput.metadata = await canonicalizePaperclipArtifactMetadata({
         issue,
@@ -3862,6 +3869,9 @@ export function issueRoutes(
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const actor = getActorInfo(req);
     const patch = { ...req.body };
+    const createdByRunId = await resolveWorkProductCreatedByRunId(req, res, existing.companyId, req.body, "update");
+    if (createdByRunId === undefined && Object.prototype.hasOwnProperty.call(req.body, "createdByRunId")) return;
+    if (createdByRunId !== undefined) patch.createdByRunId = createdByRunId;
     if (requiresPaperclipAttachmentMetadata(patch, existing)) {
       if (patch.metadata !== undefined) {
         patch.metadata = await canonicalizePaperclipArtifactMetadata({
@@ -4171,7 +4181,15 @@ export function issueRoutes(
       }
       if (!(await assertIssueReadAllowed(req, res, parent))) return;
     }
-    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, req.body))) return;
+    const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
+      companyId,
+      req.body.assigneeAgentId as string | null | undefined,
+    );
+    const createBody = {
+      ...req.body,
+      ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+    };
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId, {
         projectId: await resolveAssignmentProjectId({
@@ -4180,27 +4198,27 @@ export function issueRoutes(
           parentIssueId: req.body.parentId,
         }),
         parentIssueId: req.body.parentId ?? null,
-        assigneeAgentId: req.body.assigneeAgentId ?? null,
+        assigneeAgentId: createBody.assigneeAgentId ?? null,
         assigneeUserId: req.body.assigneeUserId ?? null,
       });
     }
-    await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
+    await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
-      normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      normalizeIssueExecutionPolicy(createBody.executionPolicy),
       actor.actorType,
     );
-    await assertCanManageIssueMonitor(access, req, companyId, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
       companyId,
-      projectId: req.body.projectId ?? null,
+      projectId: createBody.projectId ?? null,
       executionPolicy,
     }, actor);
     const issue = await svc.create(companyId, {
-      ...req.body,
+      ...createBody,
       id: issueId,
       executionPolicy,
       ...(sourceTrust ? { sourceTrust } : {}),
@@ -4287,32 +4305,40 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, req.body))) return;
+    const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
+      parent.companyId,
+      req.body.assigneeAgentId as string | null | undefined,
+    );
+    const createBody = {
+      ...req.body,
+      ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+    };
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, parent.companyId, {
-        projectId: req.body.projectId ?? parent.projectId ?? null,
+        projectId: createBody.projectId ?? parent.projectId ?? null,
         parentIssueId: parent.id,
-        assigneeAgentId: req.body.assigneeAgentId ?? null,
-        assigneeUserId: req.body.assigneeUserId ?? null,
+        assigneeAgentId: createBody.assigneeAgentId ?? null,
+        assigneeUserId: createBody.assigneeUserId ?? null,
       });
     }
-    await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
+    await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
-      normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      normalizeIssueExecutionPolicy(createBody.executionPolicy),
       actor.actorType,
     );
-    await assertCanManageIssueMonitor(access, req, parent.companyId, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    await assertCanManageIssueMonitor(access, req, parent.companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
       companyId: parent.companyId,
-      projectId: req.body.projectId ?? parent.projectId ?? null,
+      projectId: createBody.projectId ?? parent.projectId ?? null,
       executionPolicy,
     }, actor);
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
-      ...req.body,
+      ...createBody,
       id: issueId,
       executionPolicy,
       ...(sourceTrust ? { sourceTrust } : {}),
@@ -4401,23 +4427,33 @@ export function issueRoutes(
     assertCompanyAccess(req, sourceIssue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue))) return;
 
+    const requestedChildren = [];
     for (const child of req.body.children as Array<typeof req.body.children[number]>) {
-      assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(child));
-      if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, sourceIssue, child))) return;
-      if (child.assigneeAgentId || child.assigneeUserId) {
+      const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
+        sourceIssue.companyId,
+        child.assigneeAgentId as string | null | undefined,
+      );
+      const childBody = {
+        ...child,
+        ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      };
+      requestedChildren.push(childBody);
+      assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(childBody));
+      if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, sourceIssue, childBody))) return;
+      if (childBody.assigneeAgentId || childBody.assigneeUserId) {
         await assertCanAssignTasks(req, sourceIssue.companyId, {
-          projectId: child.projectId ?? sourceIssue.projectId ?? null,
+          projectId: childBody.projectId ?? sourceIssue.projectId ?? null,
           parentIssueId: sourceIssue.id,
-          assigneeAgentId: child.assigneeAgentId ?? null,
-          assigneeUserId: child.assigneeUserId ?? null,
+          assigneeAgentId: childBody.assigneeAgentId ?? null,
+          assigneeUserId: childBody.assigneeUserId ?? null,
         });
       }
-      await assertIssueEnvironmentSelection(sourceIssue.companyId, child.executionWorkspaceSettings?.environmentId);
+      await assertIssueEnvironmentSelection(sourceIssue.companyId, childBody.executionWorkspaceSettings?.environmentId);
     }
 
     const actor = getActorInfo(req);
     const normalizedChildren = [];
-    for (const child of req.body.children as Array<typeof req.body.children[number]>) {
+    for (const child of requestedChildren) {
       const executionPolicy = applyActorMonitorScheduledBy(
         normalizeIssueExecutionPolicy(child.executionPolicy),
         actor.actorType,
@@ -5977,7 +6013,9 @@ export function issueRoutes(
         });
       }
 
-      const acceptedPlanTarget = readAcceptedPlanConfirmationTarget(interaction.payload);
+      const acceptedPlanTarget = interaction.kind === "request_confirmation"
+        ? readAcceptedPlanConfirmationTarget(interaction.payload)
+        : null;
       const acceptedPlanConfirmation =
         interaction.kind === "request_confirmation" &&
         interaction.status === "accepted" &&
@@ -6035,7 +6073,7 @@ export function issueRoutes(
           rejectionReason:
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.rejectionReason ?? null)
-              : interaction.kind === "request_confirmation"
+              : interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation"
                 ? (interaction.result?.reason ?? null)
               : null,
         },

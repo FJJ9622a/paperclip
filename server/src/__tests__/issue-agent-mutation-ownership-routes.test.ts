@@ -201,35 +201,43 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
 
 function createRunContextDb(
   contextSnapshot: Record<string, unknown> = {},
-  runAgentId: string = ownerAgentId,
+  runAgentOrRows: string | Record<string, unknown>[] = ownerAgentId,
   runId: string = ownerRunId,
 ) {
+  const runRows = Array.isArray(runAgentOrRows)
+    ? runAgentOrRows
+    : [{
+        id: runId,
+        companyId,
+        agentId: runAgentOrRows,
+        agentCompanyId: companyId,
+        contextSnapshot,
+      }];
+  const firstRun = runRows[0] ?? {};
+  const runAgentId = typeof firstRun.agentId === "string" ? firstRun.agentId : ownerAgentId;
+  const runAgentCompanyId = typeof firstRun.agentCompanyId === "string" ? firstRun.agentCompanyId : companyId;
+  const rowsForSelection = (selection: Record<string, unknown>) => {
+    const keys = Object.keys(selection);
+    if (keys.includes("entityId")) return [];
+    if (keys.includes("contextSnapshot")) return runRows;
+    if (keys.includes("agentCompanyId")) return runRows;
+    return [{ id: runAgentId, companyId: runAgentCompanyId, permissions: {}, role: "engineer", reportsTo: null }];
+  };
+  const buildQuery = (selection: Record<string, unknown>) => {
+    const whereResult = {
+      orderBy: vi.fn(async () => []),
+      then: async (resolve: (rows: unknown[]) => unknown) => resolve(rowsForSelection(selection)),
+    };
+    const query = {
+      innerJoin: vi.fn(() => query),
+      where: vi.fn(() => whereResult),
+    };
+    return query;
+  };
   return {
     transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          orderBy: vi.fn(async () => []),
-          then: async (resolve: (rows: unknown[]) => unknown) => {
-            const keys = Object.keys(selection);
-            if (keys.includes("entityId")) {
-              return resolve([]);
-            }
-            if (keys.includes("contextSnapshot")) {
-              return resolve([{
-                id: runId,
-                companyId,
-                agentId: runAgentId,
-                contextSnapshot,
-              }]);
-            }
-            if (keys.includes("permissions")) {
-              return resolve([{ id: runAgentId, companyId, permissions: {}, role: "engineer", reportsTo: null }]);
-            }
-            return resolve([{ id: runAgentId, companyId, permissions: {}, role: "engineer", reportsTo: null }]);
-          },
-        })),
-      })),
+      from: vi.fn(() => buildQuery(selection)),
     })),
   };
 }
@@ -600,6 +608,27 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
   });
 
+  it("rejects the checked-out owner without a run id on attachment upload (401)", async () => {
+    // Regression: an agent-authenticated client (e.g. the CLI's attachment:upload)
+    // that fails to send X-Paperclip-Run-Id must be rejected — mutating your own
+    // in-progress checkout requires proving run ownership.
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_key",
+      // intentionally no runId
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
+      .attach("file", Buffer.from("report"), { filename: "report.html", contentType: "text/html" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.error).toBe("Agent run id required");
+    expect(mockStorageService.putFile).not.toHaveBeenCalled();
+  });
+
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {
     const app = await createApp(ownerActor());
 
@@ -620,6 +649,73 @@ describe("agent issue mutation checkout ownership", () => {
         lockedDocumentStrategy: "create_new_document",
       }),
     );
+  });
+
+  it("stores the authenticated agent run id when creating work products", async () => {
+    const app = await createApp(ownerActor());
+
+    await request(app).post(`/api/issues/${issueId}/work-products`).send({
+      type: "artifact",
+      provider: "test",
+      title: "Artifact",
+    }).expect(201);
+
+    expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
+      issueId,
+      companyId,
+      expect.objectContaining({ createdByRunId: ownerRunId }),
+    );
+  });
+
+  it("rejects agent-created work products with a forged run id", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app).post(`/api/issues/${issueId}/work-products`).send({
+      type: "artifact",
+      provider: "test",
+      title: "Artifact",
+      createdByRunId: "66666666-6666-4666-8666-666666666666",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("createdByRunId must match the authenticated agent run");
+    expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
+  });
+
+  it("rejects work product updates with a forged agent run id", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app).patch("/api/work-products/product-1").send({
+      createdByRunId: "66666666-6666-4666-8666-666666666666",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("createdByRunId must match the authenticated agent run");
+    expect(mockWorkProductService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects board-created work products with a foreign-company run id", async () => {
+    const app = await createApp(
+      boardActor(),
+      createRunContextDb({}, [{
+        id: "66666666-6666-4666-8666-666666666666",
+        companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        agentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        agentCompanyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        contextSnapshot: {},
+      }]),
+    );
+
+    const res = await request(app).post(`/api/issues/${issueId}/work-products`).send({
+      type: "artifact",
+      provider: "test",
+      title: "Artifact",
+      createdByRunId: "66666666-6666-4666-8666-666666666666",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("createdByRunId is not valid for this company");
+    expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
   });
 
   it.each([

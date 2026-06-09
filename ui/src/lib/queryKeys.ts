@@ -88,6 +88,30 @@ export const queryKeys = {
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
     workProducts: (issueId: string) => ["issues", "work-products", issueId] as const,
+    fileResources: (
+      issueId: string,
+      options: {
+        workspace?: string;
+        projectId?: string | null;
+        workspaceId?: string | null;
+        path?: string | null;
+        mode?: string;
+        q?: string | null;
+        limit?: number;
+        offset?: number;
+      } = {},
+    ) =>
+      ["issues", "file-resources", issueId, "list", options] as const,
+    fileResource: (
+      issueId: string,
+      query: { path: string; workspace?: string; projectId?: string | null; workspaceId?: string | null },
+    ) =>
+      ["issues", "file-resources", issueId, "resolve", query] as const,
+    fileResourceContent: (
+      issueId: string,
+      query: { path: string; workspace?: string; projectId?: string | null; workspaceId?: string | null },
+    ) =>
+      ["issues", "file-resources", issueId, "content", query] as const,
   },
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>
@@ -116,6 +140,23 @@ export const queryKeys = {
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
+  },
+  artifacts: {
+    list: (
+      companyId: string,
+      kind?: string,
+      q?: string,
+      groupBy?: string,
+      groupIssueId?: string,
+    ) =>
+      [
+        "artifacts",
+        companyId,
+        kind ?? "all",
+        q ?? "",
+        groupBy ?? "none",
+        groupIssueId ?? "",
+      ] as const,
   },
   budgets: {
     overview: (companyId: string) => ["budgets", "overview", companyId] as const,

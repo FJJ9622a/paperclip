@@ -7,10 +7,12 @@ import {
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
   countSuggestedTaskNodes,
+  getCheckboxConfirmationSelectedLabels,
   getQuestionAnswerLabels,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
   type IssueThreadInteraction,
+  type RequestCheckboxConfirmationInteraction,
   type RequestConfirmationInteraction,
   type RequestConfirmationTarget,
   type SuggestTasksInteraction,
@@ -34,11 +36,18 @@ interface IssueThreadInteractionCardProps {
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
   onAcceptInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     selectedClientKeys?: string[],
+    selectedOptionIds?: string[],
   ) => Promise<void> | void;
   onRejectInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
   onSubmitInteractionAnswers?: (
@@ -97,6 +106,8 @@ function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
       return "Ask user questions";
     case "request_confirmation":
       return "Confirmation";
+    case "request_checkbox_confirmation":
+      return "Checkbox confirmation";
     default:
       return kind;
   }
@@ -1024,7 +1035,7 @@ function requestConfirmationTargetHref({
   interaction,
   target,
 }: {
-  interaction: RequestConfirmationInteraction;
+  interaction: Pick<IssueThreadInteraction, "issueId">;
   target: RequestConfirmationTarget;
 }) {
   if (target.href) return target.href;
@@ -1040,7 +1051,7 @@ function RequestConfirmationTargetChip({
   target,
   tone = "default",
 }: {
-  interaction: RequestConfirmationInteraction;
+  interaction: Pick<IssueThreadInteraction, "issueId">;
   target: RequestConfirmationTarget | null | undefined;
   tone?: "default" | "subtle";
 }) {
@@ -1440,6 +1451,426 @@ function RequestConfirmationCard({
   );
 }
 
+const CHECKBOX_SUMMARY_LABEL_LIMIT = 8;
+
+function RequestCheckboxConfirmationResolution({
+  interaction,
+}: {
+  interaction: RequestCheckboxConfirmationInteraction;
+}) {
+  const target = interaction.payload.target ?? null;
+  const [expanded, setExpanded] = useState(false);
+
+  if (interaction.status === "accepted") {
+    const totalOptions = interaction.payload.options.length;
+    const selectedLabels = getCheckboxConfirmationSelectedLabels({
+      payload: interaction.payload,
+      result: interaction.result,
+    });
+    const selectedCount = interaction.result?.selectedOptionIds?.length ?? selectedLabels.length;
+    const visibleLabels = expanded
+      ? selectedLabels
+      : selectedLabels.slice(0, CHECKBOX_SUMMARY_LABEL_LIMIT);
+    const hiddenCount = selectedLabels.length - CHECKBOX_SUMMARY_LABEL_LIMIT;
+    const hasHiddenLabels = hiddenCount > 0;
+    const chipClassName =
+      "inline-flex items-center rounded-sm border border-border/60 bg-transparent px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground";
+
+    return (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
+          <span className="font-medium">
+            {selectedCount === 0
+              ? "Confirmed with no options selected"
+              : `Confirmed ${selectedCount} of ${totalOptions} ${totalOptions === 1 ? "option" : "options"}`}
+          </span>
+          <RequestConfirmationTargetChip interaction={interaction} target={target} />
+        </div>
+        {visibleLabels.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {visibleLabels.map((label, index) => (
+              <TaskField key={`${label}-${index}`} label="Selected" value={label} />
+            ))}
+            {hasHiddenLabels ? (
+              <button
+                type="button"
+                onClick={() => setExpanded((current) => !current)}
+                className={cn(
+                  chipClassName,
+                  "cursor-pointer transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+                )}
+                aria-expanded={expanded}
+              >
+                {expanded ? "Show less" : `+${hiddenCount} more`}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (interaction.status === "rejected") {
+    return <RequestConfirmationResolution interaction={interaction as unknown as RequestConfirmationInteraction} />;
+  }
+
+  if (interaction.status === "expired") {
+    return <RequestConfirmationResolution interaction={interaction as unknown as RequestConfirmationInteraction} />;
+  }
+
+  if (interaction.status === "failed") {
+    return (
+      <p className="text-sm leading-6 text-muted-foreground">
+        This request could not be resolved. Try again or create a new request.
+      </p>
+    );
+  }
+
+  return null;
+}
+
+function CheckboxOptionRow({
+  id,
+  label,
+  description,
+  checked,
+  disabled,
+  onToggle,
+}: {
+  id: string;
+  label: string;
+  description?: string | null;
+  checked: boolean;
+  disabled: boolean;
+  onToggle: (checked: boolean) => void;
+}) {
+  return (
+    <label
+      htmlFor={id}
+      className={cn(
+        "flex cursor-pointer items-start gap-2.5 border-b border-border/60 px-3 py-2 last:border-b-0 transition-colors",
+        checked ? "bg-sky-500/10" : "hover:bg-sky-500/5",
+        disabled && "cursor-not-allowed opacity-60",
+      )}
+    >
+      <Checkbox
+        id={id}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={(value) => onToggle(value === true)}
+        aria-label={label}
+        className="mt-0.5"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium leading-5 text-foreground">{label}</div>
+        {description ? (
+          <p className="mt-0.5 text-sm leading-5 text-muted-foreground">{description}</p>
+        ) : null}
+      </div>
+    </label>
+  );
+}
+
+function RequestCheckboxConfirmationCard({
+  interaction,
+  onAcceptInteraction,
+  onRejectInteraction,
+}: {
+  interaction: RequestCheckboxConfirmationInteraction;
+  onAcceptInteraction?: (
+    interaction: RequestCheckboxConfirmationInteraction,
+    selectedClientKeys: undefined,
+    selectedOptionIds: string[],
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction: RequestCheckboxConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+}) {
+  const options = interaction.payload.options;
+  const optionIds = useMemo(() => options.map((option) => option.id), [options]);
+  const validOptionIds = useMemo(() => new Set(optionIds), [optionIds]);
+  const minSelected = interaction.payload.minSelected ?? 0;
+  const maxSelected = interaction.payload.maxSelected ?? null;
+
+  const defaultSelected = useMemo(
+    () =>
+      new Set(
+        (interaction.payload.defaultSelectedOptionIds ?? []).filter((id) => validOptionIds.has(id)),
+      ),
+    [interaction.payload.defaultSelectedOptionIds, validOptionIds],
+  );
+
+  const [selectedOptionIds, setSelectedOptionIds] = useState<Set<string>>(() => new Set(defaultSelected));
+  const [rejecting, setRejecting] = useState(false);
+  const [working, setWorking] = useState<"accept" | "reject" | null>(null);
+  const [rejectReason, setRejectReason] = useState(interaction.result?.reason ?? "");
+  const [rejectAttempted, setRejectAttempted] = useState(false);
+  const [acceptAttempted, setAcceptAttempted] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const optionSeed = useMemo(() => optionIds.join("\n"), [optionIds]);
+
+  useEffect(() => {
+    setSelectedOptionIds(new Set(defaultSelected));
+    setRejectReason(interaction.result?.reason ?? "");
+    setRejectAttempted(false);
+    setAcceptAttempted(false);
+    setActionError(null);
+    if (interaction.status !== "pending") {
+      setRejecting(false);
+      setWorking(null);
+    }
+  }, [interaction.id, interaction.status, interaction.result?.reason, defaultSelected, optionSeed]);
+
+  const rejectRequiresReason = interaction.payload.rejectRequiresReason === true;
+  const allowDeclineReason = interaction.payload.allowDeclineReason !== false;
+  const trimmedRejectReason = rejectReason.trim();
+  const canReject = !rejectRequiresReason || trimmedRejectReason.length > 0;
+  const declineReasonInvalid = rejectRequiresReason && !canReject;
+  const declineReasonPlaceholder =
+    interaction.payload.declineReasonPlaceholder ?? "Optional: tell the agent what you'd change.";
+
+  const selectedCount = selectedOptionIds.size;
+  const totalOptions = options.length;
+  const atMax = maxSelected != null && selectedCount >= maxSelected;
+  const belowMin = selectedCount < minSelected;
+  const aboveMax = maxSelected != null && selectedCount > maxSelected;
+  const selectionValid = !belowMin && !aboveMax;
+
+  const validationMessage = belowMin
+    ? minSelected === 1
+      ? "Select at least 1 option."
+      : `Select at least ${minSelected} options.`
+    : aboveMax && maxSelected != null
+      ? maxSelected === 1
+        ? "Select at most 1 option."
+        : `Select at most ${maxSelected} options.`
+      : null;
+
+  function toggleOption(optionId: string, checked: boolean) {
+    setSelectedOptionIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(optionId);
+      } else {
+        next.delete(optionId);
+      }
+      return next;
+    });
+  }
+
+  function handleSelectAll() {
+    const capped = maxSelected != null ? optionIds.slice(0, maxSelected) : optionIds;
+    setSelectedOptionIds(new Set(capped));
+  }
+
+  function handleClearSelection() {
+    setSelectedOptionIds(new Set());
+  }
+
+  async function handleAccept() {
+    setAcceptAttempted(true);
+    if (!onAcceptInteraction || !selectionValid) return;
+    setWorking("accept");
+    setActionError(null);
+    try {
+      await onAcceptInteraction(interaction, undefined, [...selectedOptionIds]);
+    } catch {
+      setActionError("Try again");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function handleReject() {
+    setRejectAttempted(true);
+    if (!onRejectInteraction || !canReject) return;
+    setWorking("reject");
+    setActionError(null);
+    try {
+      await onRejectInteraction(interaction, trimmedRejectReason || undefined);
+      setRejecting(false);
+    } catch {
+      setActionError("Try again");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  if (interaction.status !== "pending") {
+    return (
+      <div className="space-y-4">
+        <RequestCheckboxConfirmationResolution interaction={interaction} />
+      </div>
+    );
+  }
+
+  const selectionSummary = totalOptions > 0 && selectedCount === totalOptions
+    ? `All ${totalOptions} options selected`
+    : `${selectedCount} of ${totalOptions} ${totalOptions === 1 ? "option" : "options"} selected`;
+  const boundsHint = maxSelected != null
+    ? `Pick ${minSelected === maxSelected ? `exactly ${maxSelected}` : `${minSelected}-${maxSelected}`}.`
+    : minSelected > 0
+      ? `Pick at least ${minSelected}.`
+      : null;
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
+        <div className="text-sm leading-6 text-foreground">{interaction.payload.prompt}</div>
+        {interaction.payload.detailsMarkdown ? (
+          <div className="border-t border-border/60 pt-3 text-sm">
+            <MarkdownBody>{interaction.payload.detailsMarkdown}</MarkdownBody>
+          </div>
+        ) : null}
+        <RequestConfirmationTargetChip
+          interaction={interaction}
+          target={interaction.payload.target}
+        />
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>{selectionSummary}</span>
+            {boundsHint ? <span>{boundsHint}</span> : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={working !== null || selectedCount === totalOptions || (maxSelected != null && selectedCount >= maxSelected)}
+              onClick={handleSelectAll}
+            >
+              Select all
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={working !== null || selectedCount === 0}
+              onClick={handleClearSelection}
+            >
+              Clear selection
+            </Button>
+          </div>
+        </div>
+
+        <div
+          role="group"
+          aria-label="Selectable options"
+          className="max-h-80 overflow-y-auto rounded-sm border border-border/70"
+        >
+          {options.map((option) => {
+            const checked = selectedOptionIds.has(option.id);
+            return (
+              <CheckboxOptionRow
+                key={option.id}
+                id={`${interaction.id}-${option.id}`}
+                label={option.label}
+                description={option.description}
+                checked={checked}
+                disabled={working !== null || (!checked && atMax)}
+                onToggle={(value) => toggleOption(option.id, value)}
+              />
+            );
+          })}
+        </div>
+
+        {acceptAttempted && validationMessage ? (
+          <p className="text-xs text-destructive">{validationMessage}</p>
+        ) : null}
+
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button
+            size="sm"
+            variant={rejecting ? "outline" : "default"}
+            disabled={!onAcceptInteraction || working !== null}
+            onClick={() => void handleAccept()}
+          >
+            {working === "accept" ? (
+              <>
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                Confirming...
+              </>
+            ) : (
+              interaction.payload.acceptLabel ?? "Confirm selected"
+            )}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!onRejectInteraction || working !== null}
+            onClick={() => {
+              if (!allowDeclineReason) {
+                void handleReject();
+                return;
+              }
+              setRejectAttempted(false);
+              setRejecting((current) => !current);
+            }}
+          >
+            {interaction.payload.rejectLabel ?? "Request changes"}
+          </Button>
+        </div>
+
+        {rejecting ? (
+          <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-3">
+            <Textarea
+              value={rejectReason}
+              onChange={(event) => setRejectReason(event.target.value)}
+              placeholder={declineReasonPlaceholder}
+              aria-invalid={rejectAttempted && declineReasonInvalid}
+              className={cn(
+                "min-h-24 bg-background text-sm",
+                rejectAttempted && declineReasonInvalid
+                  && "border-rose-500 focus-visible:ring-rose-500/25",
+              )}
+            />
+            {rejectAttempted && declineReasonInvalid ? (
+              <p className="text-xs text-destructive">A reason is required.</p>
+            ) : null}
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={working !== null}
+                onClick={() => {
+                  setRejecting(false);
+                  setRejectAttempted(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!onRejectInteraction || working !== null}
+                onClick={() => void handleReject()}
+              >
+                {working === "reject" ? (
+                  <>
+                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  interaction.payload.rejectLabel ?? "Request changes"
+                )}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {actionError ? (
+          <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {actionError}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function IssueThreadInteractionCard({
   interaction,
   agentMap,
@@ -1501,6 +1932,8 @@ export function IssueThreadInteractionCard({
                 ? "Suggested task tree"
                 : interaction.kind === "ask_user_questions"
                   ? interaction.payload.title ?? "Questions for the operator"
+                : interaction.kind === "request_checkbox_confirmation"
+                  ? "Checkbox confirmation requested"
                   : isPlan
                     ? "Plan review"
                     : "Confirmation requested")}
@@ -1540,6 +1973,12 @@ export function IssueThreadInteractionCard({
             interaction={interaction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
+          />
+        ) : interaction.kind === "request_checkbox_confirmation" ? (
+          <RequestCheckboxConfirmationCard
+            interaction={interaction}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
           />
         ) : (
           <RequestConfirmationCard

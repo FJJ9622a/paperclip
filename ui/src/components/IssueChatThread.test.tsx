@@ -1618,7 +1618,7 @@ describe("IssueChatThread", () => {
       );
     });
 
-    expect(container.textContent).toContain("Work on this issue is blocked by the linked issue");
+    expect(container.textContent).toContain("Work on this task is blocked by the linked task");
     expect(container.textContent).toContain("Comments still wake the assignee for questions or triage");
     expect(container.textContent).toContain("PAP-1723");
     expect(container.textContent).toContain("QA the install flow");
@@ -2316,7 +2316,7 @@ describe("IssueChatThread", () => {
     expect(container.querySelector('[data-testid="issue-chat-composer-drop-overlay"]')).not.toBeNull();
     expect(container.textContent).toContain("Drop to upload");
     expect(container.textContent).toContain("Images insert into the reply");
-    expect(container.textContent).toContain("Other files are added to this issue");
+    expect(container.textContent).toContain("Other files are added to this task");
     expect(composer?.className).toContain("border-primary/45");
 
     act(() => {
@@ -2372,7 +2372,7 @@ describe("IssueChatThread", () => {
     const attachmentList = container.querySelector('[data-testid="issue-chat-composer-attachments"]');
     expect(attachmentList).not.toBeNull();
     expect(container.textContent).toContain("report.pdf");
-    expect(container.textContent).toContain("Attached to issue");
+    expect(container.textContent).toContain("Attached to task");
 
     await act(async () => {
       root.unmount();
@@ -2472,7 +2472,7 @@ describe("IssueChatThread", () => {
     expect(attachmentList).not.toBeNull();
     expect(attachmentList?.className).toContain("mb-3");
     expect(container.textContent).toContain("report.pdf");
-    expect(container.textContent).toContain("Attached to issue");
+    expect(container.textContent).toContain("Attached to task");
 
     await act(async () => {
       root.unmount();

@@ -3,10 +3,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, Issue, IssueAttachment, IssueTreeControlPreview, IssueTreeHold, IssueWorkProduct } from "@paperclipai/shared";
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
+import { NavigationType } from "react-router-dom";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { canBoardResolveRecoveryAction, IssueDetail } from "./IssueDetail";
+import { canBoardResolveRecoveryAction, IssueDetail, shouldScrollIssueDetailToTopOnNavigation } from "./IssueDetail";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -74,6 +75,7 @@ const mockPushToast = vi.hoisted(() => vi.fn());
 const mockIssuesListRender = vi.hoisted(() => vi.fn());
 const mockIssueChatThreadRender = vi.hoisted(() => vi.fn());
 const mockImageGalleryRender = vi.hoisted(() => vi.fn());
+const mockIssueWorkspaceCardRender = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
@@ -219,6 +221,11 @@ vi.mock("../components/IssueChatThread", () => ({
     onStopRun?: (runId: string) => Promise<void>;
     stopRunLabel?: string;
     stoppingRunLabel?: string;
+    runFinalizationActions?: readonly {
+      id: string;
+      label: string;
+      onSelect: (runId: string) => Promise<void> | void;
+    }[];
     footer?: ReactNode;
   }) => {
     mockIssueChatThreadRender(props);
@@ -230,6 +237,15 @@ vi.mock("../components/IssueChatThread", () => ({
             {props.stopRunLabel ?? "Stop run"}
           </button>
         ) : null}
+        {props.runFinalizationActions?.map((action) => (
+          <button
+            key={action.id}
+            type="button"
+            onClick={() => void action.onSelect("run-active-1")}
+          >
+            {action.label}
+          </button>
+        ))}
         {props.footer}
       </div>
     );
@@ -267,7 +283,10 @@ vi.mock("../components/IssueRunLedger", () => ({
 }));
 
 vi.mock("../components/IssueWorkspaceCard", () => ({
-  IssueWorkspaceCard: () => <div>Workspace</div>,
+  IssueWorkspaceCard: (props: { onBrowseFiles?: () => void; onOpenFileByPath?: () => void }) => {
+    mockIssueWorkspaceCardRender(props);
+    return <div>Workspace</div>;
+  },
 }));
 
 vi.mock("../components/ImageGalleryModal", () => ({
@@ -341,6 +360,7 @@ vi.mock("@/components/ui/sheet", () => ({
   Sheet: ({ children, open }: { children?: ReactNode; open?: boolean }) => (open ? <div>{children}</div> : null),
   SheetContent: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   SheetHeader: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  SheetDescription: ({ children }: { children?: ReactNode }) => <p>{children}</p>,
   SheetTitle: ({ children }: { children?: ReactNode }) => <h2>{children}</h2>,
 }));
 
@@ -918,11 +938,13 @@ describe("IssueDetail", () => {
     });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
     });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
     mockImageGalleryRender.mockClear();
+    mockIssueWorkspaceCardRender.mockClear();
   });
 
   afterEach(async () => {
@@ -954,7 +976,7 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Issue detail smoke");
     expect(container.textContent).toContain("Chat thread");
     expect(
-      consoleErrorSpy.mock.calls.some((call) =>
+      consoleErrorSpy.mock.calls.some((call: unknown[]) =>
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
@@ -978,10 +1000,55 @@ describe("IssueDetail", () => {
     expect(mockIssuesApi.listAcceptedPlanDecompositions).not.toHaveBeenCalled();
   });
 
+  it("hides file viewer entry points by default", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelector('[aria-label="Open file in this issue"]')).toBeNull();
+    const latestWorkspaceProps = mockIssueWorkspaceCardRender.mock.calls.at(-1)?.[0];
+    expect(latestWorkspaceProps?.onBrowseFiles).toBeUndefined();
+    expect(latestWorkspaceProps?.onOpenFileByPath).toBeUndefined();
+  });
+
+  it("shows file viewer entry points when the experimental flag is enabled", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: true,
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelector('[aria-label="Open file in this issue"]')).not.toBeNull();
+    const latestWorkspaceProps = mockIssueWorkspaceCardRender.mock.calls.at(-1)?.[0];
+    expect(latestWorkspaceProps?.onBrowseFiles).toEqual(expect.any(Function));
+    expect(latestWorkspaceProps?.onOpenFileByPath).toEqual(expect.any(Function));
+  });
+
   it("shows the plan decomposition panel when the experimental flag is enabled", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIssuePlanDecompositions: true,
+      enableExperimentalFileViewer: false,
     });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([
       {
@@ -1028,7 +1095,7 @@ describe("IssueDetail", () => {
 
     expect(container.textContent).toContain("Plan decomposition");
     expect(container.textContent).toContain("Plan revision 2");
-    expect(container.textContent).toContain("2 of 2 child issues created");
+    expect(container.textContent).toContain("2 of 2 child tasks created");
     expect(container.textContent).toContain("First child issue");
     expect(mockIssuesApi.listAcceptedPlanDecompositions).toHaveBeenCalledWith("issue-1");
   });
@@ -1081,8 +1148,8 @@ describe("IssueDetail", () => {
       parentId: "parent-1",
       includeBlockedBy: true,
     });
-    expect(container.querySelector('a[aria-label="Previous sub-issue: PAP-1 - Previous sibling"]')).toBeTruthy();
-    expect(container.querySelector('a[aria-label="Next sub-issue: PAP-3 - Next sibling"]')).toBeTruthy();
+    expect(container.querySelector('a[aria-label="Previous sub-task: PAP-1 - Previous sibling"]')).toBeTruthy();
+    expect(container.querySelector('a[aria-label="Next sub-task: PAP-3 - Next sibling"]')).toBeTruthy();
     expect(container.textContent).toContain("Previous");
     expect(container.textContent).toContain("Previous sibling");
     expect(container.textContent).toContain("Next");
@@ -1137,7 +1204,7 @@ describe("IssueDetail", () => {
       descendantOf: "issue-parent",
       includeBlockedBy: true,
     });
-    expect(container.querySelector('a[aria-label="Next sub-issue: PAP-11 - First child"]')).toBeTruthy();
+    expect(container.querySelector('a[aria-label="Next sub-task: PAP-11 - First child"]')).toBeTruthy();
     expect(container.textContent).toContain("Next");
     expect(container.textContent).toContain("First child");
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].footer).toBeTruthy();
@@ -1314,7 +1381,7 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    const moreButton = container.querySelector('button[aria-label="More issue actions"]') as HTMLButtonElement | null;
+    const moreButton = container.querySelector('button[aria-label="More task actions"]') as HTMLButtonElement | null;
     expect(moreButton).toBeTruthy();
 
     await act(async () => {
@@ -1424,7 +1491,7 @@ describe("IssueDetail", () => {
       metadata: { source: "issue_active_run_control", runId: "run-active-1" },
     });
 
-    const moreButton = container.querySelector('button[aria-label="More issue actions"]') as HTMLButtonElement | null;
+    const moreButton = container.querySelector('button[aria-label="More task actions"]') as HTMLButtonElement | null;
     expect(moreButton).toBeTruthy();
     await act(async () => {
       moreButton!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -1434,6 +1501,103 @@ describe("IssueDetail", () => {
     const pauseMenuButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Pause work...");
     expect(pauseMenuButton).toBeTruthy();
+  });
+
+  it("routes live-run finalization actions through run cancellation before issue status update", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      assigneeAgentId: "agent-1",
+      executionRunId: "run-active-1",
+    }));
+    mockIssuesApi.update.mockImplementation((_id, data) =>
+      Promise.resolve(createIssue({
+        status: data.status as Issue["status"],
+        assigneeAgentId: "agent-1",
+      })),
+    );
+    mockHeartbeatsApi.cancel.mockResolvedValue(undefined);
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const stopAndDoneButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Stop and done");
+    expect(stopAndDoneButton).toBeTruthy();
+
+    await act(async () => {
+      stopAndDoneButton!.click();
+    });
+    await flushReact();
+
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-active-1");
+    expect(mockIssuesApi.update).toHaveBeenCalledWith("PAP-1", { status: "done" });
+    expect(mockHeartbeatsApi.cancel.mock.invocationCallOrder[0])
+      .toBeLessThan(mockIssuesApi.update.mock.invocationCallOrder[0]);
+
+    const stopAndCancelButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Stop and cancel");
+    expect(stopAndCancelButton).toBeTruthy();
+
+    await act(async () => {
+      stopAndCancelButton!.click();
+    });
+    await flushReact();
+
+    expect(mockIssuesApi.update).toHaveBeenLastCalledWith("PAP-1", { status: "cancelled" });
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledTimes(2);
+    expect(mockHeartbeatsApi.cancel.mock.invocationCallOrder[1])
+      .toBeLessThan(mockIssuesApi.update.mock.invocationCallOrder[1]);
+  });
+
+  it("reports partial success when run finalization stops the run but task status update fails", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      assigneeAgentId: "agent-1",
+      executionRunId: "run-active-1",
+    }));
+    mockIssuesApi.update.mockRejectedValue(new Error("Status write failed"));
+    mockHeartbeatsApi.cancel.mockResolvedValue(undefined);
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const stopAndDoneButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Stop and done");
+    expect(stopAndDoneButton).toBeTruthy();
+
+    await act(async () => {
+      stopAndDoneButton!.click();
+    });
+    await flushReact();
+
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-active-1");
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Run stopped; task update failed",
+      body: "Run was stopped, but updating the task failed: Status write failed",
+      tone: "error",
+    }));
   });
 
   it("passes planning work mode to the issue chat thread", async () => {
@@ -1690,7 +1854,7 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    const moreButton = container.querySelector('button[aria-label="More issue actions"]') as HTMLButtonElement | null;
+    const moreButton = container.querySelector('button[aria-label="More task actions"]') as HTMLButtonElement | null;
     expect(moreButton).toBeTruthy();
 
     await act(async () => {
@@ -1712,11 +1876,11 @@ describe("IssueDetail", () => {
       mode: "restore",
       releasePolicy: { strategy: "manual" },
     });
-    expect(container.textContent).toContain("Restore issues cancelled by this subtree operation so work can resume.");
+    expect(container.textContent).toContain("Restore tasks cancelled by this subtree operation so work can resume.");
     expect(container.textContent).toContain("Cancelled child");
 
     const restoreApplyButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Restore 1 issues");
+      .find((button) => button.textContent?.trim() === "Restore 1 tasks");
     expect(restoreApplyButton).toBeTruthy();
 
     await act(async () => {
@@ -1792,7 +1956,7 @@ describe("IssueDetail", () => {
     expect(bodyScrollRegion?.className).toContain("overscroll-contain");
 
     const cancelApplyButton = Array.from(dialogContent!.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Cancel 24 issues") as HTMLButtonElement | undefined;
+      .find((button) => button.textContent?.trim() === "Cancel 24 tasks") as HTMLButtonElement | undefined;
     expect(cancelApplyButton).toBeTruthy();
     expect(cancelApplyButton!.disabled).toBe(true);
 
@@ -1847,5 +2011,31 @@ describe("canBoardResolveRecoveryAction", () => {
         userId: "user-1",
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldScrollIssueDetailToTopOnNavigation", () => {
+  it("does not scroll when only URL search params changed for the same issue", () => {
+    expect(shouldScrollIssueDetailToTopOnNavigation({
+      previousIssueId: "PAP-10306",
+      nextIssueId: "PAP-10306",
+      navigationType: NavigationType.Push,
+    })).toBe(false);
+  });
+
+  it("scrolls on forward navigation to a different issue", () => {
+    expect(shouldScrollIssueDetailToTopOnNavigation({
+      previousIssueId: "PAP-1",
+      nextIssueId: "PAP-2",
+      navigationType: NavigationType.Push,
+    })).toBe(true);
+  });
+
+  it("does not scroll on browser back or forward restoration", () => {
+    expect(shouldScrollIssueDetailToTopOnNavigation({
+      previousIssueId: "PAP-1",
+      nextIssueId: "PAP-2",
+      navigationType: NavigationType.Pop,
+    })).toBe(false);
   });
 });

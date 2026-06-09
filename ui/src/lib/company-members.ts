@@ -84,6 +84,16 @@ export function buildCompanyUserMentionOptions(
   }));
 }
 
+export function isAgentTaskTarget(
+  agent: Pick<Agent, "status"> & Partial<Pick<Agent, "orgChainHealth">>,
+): boolean {
+  return (
+    agent.status !== "terminated" &&
+    agent.status !== "pending_approval" &&
+    agent.orgChainHealth?.status !== "invalid_org_chain"
+  );
+}
+
 export function buildIssueMentionOptions(
   issues?: Array<Pick<Issue, "id" | "identifier" | "title">> | null | undefined,
 ): MentionOption[] {
@@ -106,7 +116,7 @@ export function buildIssueMentionOptions(
 }
 
 export function buildMarkdownMentionOptions(args: {
-  agents?: Array<Pick<Agent, "id" | "name" | "status" | "icon">> | null | undefined;
+  agents?: Array<Pick<Agent, "id" | "name" | "status" | "icon"> & Partial<Pick<Agent, "orgChainHealth">>> | null | undefined;
   projects?: Array<Pick<Project, "id" | "name" | "color">> | null | undefined;
   members?: CompanyUserRecord[] | null | undefined;
   issues?: Array<Pick<Issue, "id" | "identifier" | "title">> | null | undefined;
@@ -114,7 +124,7 @@ export function buildMarkdownMentionOptions(args: {
   const options: MentionOption[] = [
     ...buildCompanyUserMentionOptions(args.members),
     ...[...(args.agents ?? [])]
-      .filter((agent) => agent.status !== "terminated")
+      .filter(isAgentTaskTarget)
       .sort((left, right) => left.name.localeCompare(right.name))
       .map((agent) => ({
         id: `agent:${agent.id}`,
