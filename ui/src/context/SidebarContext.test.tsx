@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarProvider, useSidebar } from "./SidebarContext";
@@ -12,6 +12,10 @@ const COLLAPSED_STORAGE_KEY = "paperclip.sidebar.collapsed";
 
 // Mutable media state driving the matchMedia mock.
 const mediaState = { mobile: false, hoverFine: true };
+
+function act(callback: () => void) {
+  flushSync(callback);
+}
 
 function setViewport({ mobile, hoverFine }: { mobile?: boolean; hoverFine?: boolean }) {
   if (typeof mobile === "boolean") mediaState.mobile = mobile;
