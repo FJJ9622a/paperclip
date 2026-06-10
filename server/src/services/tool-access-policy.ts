@@ -546,6 +546,9 @@ export function toolAccessPolicyService(db: Db) {
       if (!application || application.companyId !== input.companyId) {
         return { ok: false, redaction, decision: decision("deny", "deny_company_boundary", "Application is outside the company.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
+      if (application.status === "disabled") {
+        return { ok: false, redaction, decision: decision("deny", "deny_disabled_application", "Application is disabled.", [], [], { redactionPlan: redaction.redactionPlan }) };
+      }
       if (application.status === "archived") {
         return { ok: false, redaction, decision: decision("deny", "deny_archived_application", "Application is archived.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }

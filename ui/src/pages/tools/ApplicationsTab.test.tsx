@@ -19,6 +19,7 @@ const mockToolsApi = vi.hoisted(() => ({
   createConnection: vi.fn(),
   updateConnection: vi.fn(),
   updateApplication: vi.fn(),
+  deleteApplication: vi.fn(),
 }));
 
 const mockSecretsApi = vi.hoisted(() => ({
@@ -329,5 +330,162 @@ describe("ApplicationsTab", () => {
     await flushReact();
 
     expect(document.body.textContent ?? "").toContain("Another application already uses that name.");
+  });
+
+  it("confirms disabling an application with connection and catalog impact", async () => {
+    mockToolsApi.updateApplication.mockResolvedValue(makeApp({ status: "disabled" }));
+    await render();
+
+    const actions = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.getAttribute("aria-label") === "Actions for GitHub",
+    );
+    expect(actions).toBeTruthy();
+    await act(() => {
+      actions!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      actions!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const disable = Array.from(document.body.querySelectorAll("[role='menuitem']")).find(
+      (item) => item.textContent === "Disable",
+    );
+    expect(disable).toBeTruthy();
+    await act(() => {
+      disable!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      disable!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const body = document.body.textContent ?? "";
+    expect(body).toContain("Disable application");
+    expect(body).toContain("Impact summary");
+    expect(body).toContain("1connection affected");
+    expect(body).toContain("2catalog tools affected");
+
+    const confirm = Array.from(document.body.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Disable application"),
+    );
+    expect(confirm).toBeTruthy();
+    await act(() => {
+      confirm!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockToolsApi.updateApplication).toHaveBeenCalledWith("app-1", { status: "disabled" });
+  });
+
+  it("reactivates disabled applications directly from the row actions menu", async () => {
+    mockToolsApi.listApplications.mockResolvedValue({
+      applications: [makeApp({ status: "disabled" }), makeApp({ id: "app-2", name: "Linear", description: null })],
+    });
+    mockToolsApi.updateApplication.mockResolvedValue(makeApp({ status: "active" }));
+    await render();
+
+    const actions = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.getAttribute("aria-label") === "Actions for GitHub",
+    );
+    await act(() => {
+      actions!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      actions!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const reactivate = Array.from(document.body.querySelectorAll("[role='menuitem']")).find(
+      (item) => item.textContent === "Reactivate",
+    );
+    expect(reactivate).toBeTruthy();
+    await act(() => {
+      reactivate!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      reactivate!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockToolsApi.updateApplication).toHaveBeenCalledWith("app-1", { status: "active" });
+  });
+
+  it("deletes an application without connections through the row actions menu", async () => {
+    mockToolsApi.deleteApplication.mockResolvedValue(makeApp({ id: "app-2", name: "Linear", description: null }));
+    await render();
+
+    const actions = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.getAttribute("aria-label") === "Actions for Linear",
+    );
+    expect(actions).toBeTruthy();
+    await act(() => {
+      actions!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      actions!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const del = Array.from(document.body.querySelectorAll("[role='menuitem']")).find(
+      (item) => item.textContent === "Delete",
+    );
+    expect(del).toBeTruthy();
+    await act(() => {
+      del!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      del!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const body = document.body.textContent ?? "";
+    expect(body).toContain("Delete application");
+    expect(body).toContain("No connections are attached");
+
+    const confirm = Array.from(document.body.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Delete application"),
+    );
+    expect(confirm).toBeTruthy();
+    await act(() => {
+      confirm!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockToolsApi.deleteApplication).toHaveBeenCalledWith("app-2");
+  });
+
+  it("surfaces the connection guard message inline when delete returns 409", async () => {
+    mockToolsApi.deleteApplication.mockRejectedValue(
+      new ApiError(
+        "This application still has connections. Remove its connections or archive the application instead of deleting it.",
+        409,
+        { error: "conflict" },
+      ),
+    );
+    await render();
+
+    const actions = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.getAttribute("aria-label") === "Actions for GitHub",
+    );
+    await act(() => {
+      actions!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      actions!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const del = Array.from(document.body.querySelectorAll("[role='menuitem']")).find(
+      (item) => item.textContent === "Delete",
+    );
+    await act(() => {
+      del!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      del!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // GitHub (app-1) has a connection, so the dialog warns before we even submit.
+    expect(document.body.textContent ?? "").toContain("delete is blocked while connections exist");
+
+    const confirm = Array.from(document.body.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Delete application"),
+    );
+    await act(() => {
+      confirm!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockToolsApi.deleteApplication).toHaveBeenCalledWith("app-1");
+    expect(document.body.textContent ?? "").toContain(
+      "Remove its connections or archive the application instead",
+    );
   });
 });

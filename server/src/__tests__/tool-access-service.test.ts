@@ -554,6 +554,91 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(missingRes.status).toBe(404);
   });
 
+  it("deletes an application with zero connections and records activity", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const app = createRouteApp(db);
+    const application = await service.createApplication(company.id, {
+      name: "Deletable app",
+      type: "mcp_http",
+    });
+
+    const res = await request(app).delete(`/api/tool-applications/${application.id}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: application.id, name: "Deletable app" });
+    const remaining = await db
+      .select()
+      .from(toolApplications)
+      .where(eq(toolApplications.id, application.id));
+    expect(remaining).toHaveLength(0);
+    const activities = await db.select().from(activityLog).where(eq(activityLog.entityId, application.id));
+    expect(activities).toEqual([
+      expect.objectContaining({
+        action: "tool_application.deleted",
+        companyId: company.id,
+        details: expect.objectContaining({ name: "Deletable app", type: "mcp_http" }),
+      }),
+    ]);
+  });
+
+  it("returns 409 and keeps the application when it still has connections", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const app = createRouteApp(db);
+    const connection = await service.createConnection(company.id, {
+      name: "Guarded connection",
+      transport: "remote_http",
+      config: { url: "https://fixture.example/mcp" },
+    });
+
+    const res = await request(app).delete(`/api/tool-applications/${connection.applicationId}`);
+
+    expect(res.status).toBe(409);
+    expect(String(res.body.error)).toMatch(/connection/i);
+    const remaining = await db
+      .select()
+      .from(toolApplications)
+      .where(eq(toolApplications.id, connection.applicationId));
+    expect(remaining).toHaveLength(1);
+  });
+
+  it("returns 403 for cross-company application deletes and 404 for missing applications", async () => {
+    const allowedCompany = await createCompany(db);
+    const otherCompany = await createCompany(db);
+    const application = await toolAccessService(db).createApplication(otherCompany.id, {
+      name: "Other company app",
+      type: "mcp_http",
+    });
+    const app = createRouteApp(db, {
+      type: "board",
+      userId: "member-user",
+      userName: "Member User",
+      userEmail: null,
+      companyIds: [allowedCompany.id],
+      memberships: [
+        {
+          companyId: allowedCompany.id,
+          membershipRole: "owner",
+          status: "active",
+        },
+      ],
+      isInstanceAdmin: false,
+      source: "session",
+    });
+
+    const forbiddenRes = await request(app).delete(`/api/tool-applications/${application.id}`);
+    const missingRes = await request(createRouteApp(db)).delete(`/api/tool-applications/${randomUUID()}`);
+
+    expect(forbiddenRes.status).toBe(403);
+    expect(missingRes.status).toBe(404);
+    const stillThere = await db
+      .select()
+      .from(toolApplications)
+      .where(eq(toolApplications.id, application.id));
+    expect(stillThere).toHaveLength(1);
+  });
+
   it("links run tool decisions to invocations, audit events, and pending action requests", async () => {
     const company = await createCompany(db);
     const [agent] = await db.insert(agents).values({

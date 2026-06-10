@@ -1886,6 +1886,26 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       return toApplication(row);
     },
 
+    deleteApplication: async (applicationId: string): Promise<ToolApplication> => {
+      const [existing] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationId));
+      if (!existing) throw notFound("Tool application not found");
+      // Guard: never orphan connections. The caller must remove the connections
+      // or archive the application instead — there is no force-cascade in v1.
+      const linkedConnections = await db
+        .select({ id: toolConnections.id })
+        .from(toolConnections)
+        .where(eq(toolConnections.applicationId, applicationId));
+      if (linkedConnections.length > 0) {
+        throw conflict(
+          "This application still has connections. Remove its connections or archive the application instead of deleting it.",
+          { connectionCount: linkedConnections.length },
+        );
+      }
+      const [row] = await db.delete(toolApplications).where(eq(toolApplications.id, applicationId)).returning();
+      if (!row) throw notFound("Tool application not found");
+      return toApplication(row);
+    },
+
     listConnections: async (companyId: string): Promise<ToolConnection[]> => {
       const rows = await db
         .select()

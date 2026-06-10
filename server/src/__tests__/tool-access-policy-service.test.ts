@@ -238,6 +238,51 @@ describeEmbeddedPostgres("tool access policy service", () => {
     });
   });
 
+  it("denies calls through disabled applications before explicit grants and allows them after reactivation", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { application, connection, catalogEntry } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: { toolName: "send_email" },
+    });
+    const input = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+    };
+
+    await expect(toolAccessPolicyService(db).decide(input)).resolves.toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_explicit_grant",
+    });
+
+    await db
+      .update(toolApplications)
+      .set({ status: "disabled", updatedAt: new Date() })
+      .where(eq(toolApplications.id, application.id));
+    await expect(toolAccessPolicyService(db).decide(input)).resolves.toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_disabled_application",
+      explanation: "Application is disabled.",
+    });
+
+    await db
+      .update(toolApplications)
+      .set({ status: "active", updatedAt: new Date() })
+      .where(eq(toolApplications.id, application.id));
+    await expect(toolAccessPolicyService(db).decide(input)).resolves.toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_explicit_grant",
+    });
+  });
+
   it("manages generic tool policies without exposing trust rules", async () => {
     const company = await createCompany(db);
     const otherCompany = await createCompany(db);

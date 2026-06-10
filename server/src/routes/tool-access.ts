@@ -144,6 +144,23 @@ export function toolAccessRoutes(
     }
   });
 
+  router.delete("/tool-applications/:applicationId", async (req, res) => {
+    assertBoard(req);
+    const existing = await svc.getApplication(req.params.applicationId as string);
+    assertCompanyAccess(req, existing.companyId);
+    const application = await svc.deleteApplication(existing.id);
+    await logActivity(db, {
+      companyId: application.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "tool_application.deleted",
+      entityType: "tool_application",
+      entityId: application.id,
+      details: { type: application.type, name: application.name },
+    });
+    res.json(application);
+  });
+
   router.get("/companies/:companyId/tools/connections", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;

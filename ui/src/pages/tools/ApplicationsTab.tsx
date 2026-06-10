@@ -2,6 +2,7 @@ import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AppWindow,
+  Archive,
   Boxes,
   ChevronDown,
   ChevronRight,
@@ -14,8 +15,10 @@ import {
   Plus,
   Power,
   RefreshCw,
+  RotateCcw,
   Stethoscope,
   Terminal,
+  Trash2,
   Upload,
   type LucideIcon,
 } from "lucide-react";
@@ -38,6 +41,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -183,6 +187,117 @@ function EditApplicationDialog({ application, error, isSaving, onClose, onSubmit
   );
 }
 
+type ApplicationLifecycleAction = {
+  application: ToolApplication;
+  status: "disabled" | "archived";
+  connectionCount: number;
+  toolCount: number;
+};
+
+function LifecycleConfirmDialog({
+  action,
+  isSaving,
+  onClose,
+  onConfirm,
+}: {
+  action: ApplicationLifecycleAction;
+  isSaving: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const verb = action.status === "archived" ? "Archive" : "Disable";
+  const lower = verb.toLowerCase();
+  const pendingLabel = action.status === "archived" ? "Archiving..." : "Disabling...";
+  const connectionLabel = action.connectionCount === 1 ? "connection" : "connections";
+  const toolLabel = action.toolCount === 1 ? "catalog tool" : "catalog tools";
+
+  return (
+    <Dialog open onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{verb} application</DialogTitle>
+          <DialogDescription>
+            {lower === "archive" ? "Archive" : "Disable"} {action.application.name} for every connection attached to it.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-md border bg-muted/30 px-3 py-3 text-sm">
+          <div className="font-medium text-foreground">Impact summary</div>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-muted-foreground">
+            <div>
+              <div className="font-mono text-base text-foreground">{action.connectionCount}</div>
+              <div>{connectionLabel} affected</div>
+            </div>
+            <div>
+              <div className="font-mono text-base text-foreground">{action.toolCount}</div>
+              <div>{toolLabel} affected</div>
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose} disabled={isSaving}>
+            Cancel
+          </Button>
+          <Button type="button" variant={action.status === "archived" ? "destructive" : "default"} onClick={onConfirm} disabled={isSaving}>
+            {isSaving ? pendingLabel : `${verb} application`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DeleteApplicationDialog({
+  application,
+  connectionCount,
+  error,
+  isDeleting,
+  onClose,
+  onConfirm,
+}: {
+  application: ToolApplication;
+  connectionCount: number;
+  error: string | null;
+  isDeleting: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Delete application</DialogTitle>
+          <DialogDescription>
+            Permanently delete {application.name}. This cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        {connectionCount > 0 ? (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+            This application still has {connectionCount} {connectionCount === 1 ? "connection" : "connections"}. Remove
+            them or archive the application instead — delete is blocked while connections exist.
+          </div>
+        ) : (
+          <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+            No connections are attached, so this application can be deleted safely.
+          </div>
+        )}
+        {error ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose} disabled={isDeleting}>
+            Cancel
+          </Button>
+          <Button type="button" variant="destructive" onClick={onConfirm} disabled={isDeleting}>
+            {isDeleting ? "Deleting..." : "Delete application"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function ApplicationsTab({ companyId }: { companyId: string }) {
   const qc = useQueryClient();
   const { pushToast } = useToast();
@@ -192,6 +307,9 @@ export function ApplicationsTab({ companyId }: { companyId: string }) {
   const [catalogFor, setCatalogFor] = useState<ToolConnection | null>(null);
   const [editingApplication, setEditingApplication] = useState<ToolApplication | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
+  const [lifecycleAction, setLifecycleAction] = useState<ApplicationLifecycleAction | null>(null);
+  const [deletingApplication, setDeletingApplication] = useState<ToolApplication | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("__all");
@@ -253,13 +371,24 @@ export function ApplicationsTab({ companyId }: { companyId: string }) {
   const invalidateApplications = () => qc.invalidateQueries({ queryKey: queryKeys.tools.applications(companyId) });
 
   const updateApplication = useMutation({
-    mutationFn: ({ applicationId, input }: { applicationId: string; input: { name: string; description: string | null } }) =>
+    mutationFn: ({
+      applicationId,
+      input,
+    }: {
+      applicationId: string;
+      input: { name?: string; description?: string | null; status?: ToolApplication["status"] };
+    }) =>
       toolsApi.updateApplication(applicationId, input),
-    onSuccess: () => {
+    onSuccess: (application, variables) => {
       invalidateApplications();
       setEditingApplication(null);
+      setLifecycleAction(null);
       setEditError(null);
-      pushToast({ title: "Application updated", tone: "success" });
+      const status = variables.input.status;
+      pushToast({
+        title: status ? `Application ${status === "active" ? "reactivated" : status}` : "Application updated",
+        tone: "success",
+      });
     },
     onError: (err) => {
       const message = err instanceof ApiError ? err.message : String(err);
@@ -273,6 +402,27 @@ export function ApplicationsTab({ companyId }: { companyId: string }) {
         body: message,
         tone: "error",
       });
+    },
+  });
+
+  const deleteApplication = useMutation({
+    mutationFn: (applicationId: string) => toolsApi.deleteApplication(applicationId),
+    onSuccess: (application) => {
+      invalidateApplications();
+      invalidateConnections();
+      setDeletingApplication(null);
+      setDeleteError(null);
+      pushToast({ title: `Deleted ${application.name}`, tone: "success" });
+    },
+    onError: (err) => {
+      // The server returns 409 when the application still has connections; show
+      // the "remove connections or archive instead" guidance inline rather than
+      // as a transient toast.
+      const message = err instanceof ApiError ? err.message : String(err);
+      setDeleteError(message);
+      if (!(err instanceof ApiError && err.status === 409)) {
+        pushToast({ title: "Could not delete application", body: message, tone: "error" });
+      }
     },
   });
 
@@ -512,6 +662,71 @@ export function ApplicationsTab({ companyId }: { companyId: string }) {
                                   <Pencil className="h-4 w-4" />
                                   Edit
                                 </DropdownMenuItem>
+                                {app.status !== "archived" ? (
+                                  <>
+                                    <DropdownMenuSeparator />
+                                    {app.status !== "disabled" ? (
+                                      <DropdownMenuItem
+                                        disabled={updateApplication.isPending}
+                                        onSelect={() =>
+                                          setLifecycleAction({
+                                            application: app,
+                                            status: "disabled",
+                                            connectionCount: connCountByApp.get(app.id) ?? 0,
+                                            toolCount: toolCountByApp.get(app.id) ?? 0,
+                                          })
+                                        }
+                                      >
+                                        <Power className="h-4 w-4" />
+                                        Disable
+                                      </DropdownMenuItem>
+                                    ) : null}
+                                    <DropdownMenuItem
+                                      disabled={updateApplication.isPending}
+                                      variant="destructive"
+                                      onSelect={() =>
+                                        setLifecycleAction({
+                                          application: app,
+                                          status: "archived",
+                                          connectionCount: connCountByApp.get(app.id) ?? 0,
+                                          toolCount: toolCountByApp.get(app.id) ?? 0,
+                                        })
+                                      }
+                                    >
+                                      <Archive className="h-4 w-4" />
+                                      Archive
+                                    </DropdownMenuItem>
+                                  </>
+                                ) : null}
+                                {app.status === "disabled" || app.status === "archived" ? (
+                                  <>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                      disabled={updateApplication.isPending}
+                                      onSelect={() =>
+                                        updateApplication.mutate({
+                                          applicationId: app.id,
+                                          input: { status: "active" },
+                                        })
+                                      }
+                                    >
+                                      <RotateCcw className="h-4 w-4" />
+                                      Reactivate
+                                    </DropdownMenuItem>
+                                  </>
+                                ) : null}
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  disabled={deleteApplication.isPending}
+                                  onSelect={() => {
+                                    setDeleteError(null);
+                                    setDeletingApplication(app);
+                                  }}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                  Delete
+                                </DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
                           </td>
@@ -648,6 +863,39 @@ export function ApplicationsTab({ companyId }: { companyId: string }) {
           onSubmit={(input) => {
             setEditError(null);
             updateApplication.mutate({ applicationId: editingApplication.id, input });
+          }}
+        />
+      ) : null}
+      {lifecycleAction ? (
+        <LifecycleConfirmDialog
+          action={lifecycleAction}
+          isSaving={updateApplication.isPending}
+          onClose={() => {
+            if (updateApplication.isPending) return;
+            setLifecycleAction(null);
+          }}
+          onConfirm={() =>
+            updateApplication.mutate({
+              applicationId: lifecycleAction.application.id,
+              input: { status: lifecycleAction.status },
+            })
+          }
+        />
+      ) : null}
+      {deletingApplication ? (
+        <DeleteApplicationDialog
+          application={deletingApplication}
+          connectionCount={connCountByApp.get(deletingApplication.id) ?? 0}
+          error={deleteError}
+          isDeleting={deleteApplication.isPending}
+          onClose={() => {
+            if (deleteApplication.isPending) return;
+            setDeletingApplication(null);
+            setDeleteError(null);
+          }}
+          onConfirm={() => {
+            setDeleteError(null);
+            deleteApplication.mutate(deletingApplication.id);
           }}
         />
       ) : null}

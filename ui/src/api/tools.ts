@@ -165,6 +165,8 @@ export const toolsApi = {
     api.post<ToolApplication>(`/companies/${companyId}/tools/applications`, input),
   updateApplication: (applicationId: string, input: UpdateToolApplicationInput) =>
     api.patch<ToolApplication>(`/tool-applications/${applicationId}`, input),
+  deleteApplication: (applicationId: string) =>
+    api.delete<ToolApplication>(`/tool-applications/${applicationId}`),
 
   // --- Connections ---
   listConnections: (companyId: string) =>
