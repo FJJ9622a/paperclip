@@ -27,6 +27,20 @@ import {
   type PipelineStageConfig,
   type PipelineStageKind,
 } from "../services/pipelines.js";
+import {
+  COMPANY_CASE_EVENTS_DEFAULT_LIMIT,
+  COMPANY_CASE_EVENTS_MAX_LIMIT,
+  COMPANY_CASE_EVENTS_MAX_TYPES,
+  getCaseChildrenTree,
+  getDirectChildrenSummary,
+  listCompanyCaseEvents,
+  listPipelineAttention,
+  loadActiveWorkForCases,
+  loadPipelineConnections,
+  PIPELINE_ATTENTION_DEFAULT_LIMIT,
+  PIPELINE_ATTENTION_MAX_LIMIT,
+  type AttentionCaller,
+} from "../services/pipelines-aggregation.js";
 import { assertCompanyAccess } from "./authz.js";
 
 const stageKindSchema = z.enum(["open", "working", "review", "done", "cancelled"]);
@@ -184,6 +198,34 @@ function actorForMutation(req: Request): PipelineActor {
   throw unauthorized();
 }
 
+function attentionCallerFor(req: Request): AttentionCaller {
+  if (req.actor.type === "agent") {
+    if (!req.actor.agentId) throw unauthorized();
+    return { type: "agent", agentId: req.actor.agentId };
+  }
+  if (req.actor.type === "board") {
+    return { type: "user", userId: req.actor.userId ?? "board" };
+  }
+  throw unauthorized();
+}
+
+function parseEventTypesQuery(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  const raw = Array.isArray(value) ? value : [value];
+  const types = raw
+    .flatMap((item) => String(item).split(","))
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  if (types.length === 0) return undefined;
+  if (types.length > COMPANY_CASE_EVENTS_MAX_TYPES) {
+    throw badRequest(`types accepts at most ${COMPANY_CASE_EVENTS_MAX_TYPES} values`);
+  }
+  for (const type of types) {
+    if (!/^[a-z_]{1,64}$/.test(type)) throw badRequest(`Invalid event type: ${type}`);
+  }
+  return [...new Set(types)];
+}
+
 function parseOptionalNonNegativeInteger(value: unknown, name: string) {
   if (value === undefined) return null;
   if (Array.isArray(value)) throw badRequest(`${name} must be a single integer`);
@@ -287,7 +329,34 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       .where(eq(pipelines.companyId, companyId))
       .groupBy(pipelines.id)
       .orderBy(asc(pipelines.createdAt));
-    res.json(rows.map((row) => ({ ...row.pipeline, stageCount: row.stageCount, openCaseCount: row.openCaseCount })));
+    const connections = await loadPipelineConnections(db, companyId);
+    res.json(rows.map((row) => ({
+      ...row.pipeline,
+      stageCount: row.stageCount,
+      openCaseCount: row.openCaseCount,
+      connections: connections.get(row.pipeline.id) ?? { upstreamPipelineIds: [], downstreamPipelineIds: [] },
+    })));
+  });
+
+  router.get("/companies/:companyId/pipelines-attention", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertPipelineCompanyAccess(req, companyId);
+    const caller = attentionCallerFor(req);
+    const requestedLimit = parseOptionalNonNegativeInteger(req.query.limit, "limit");
+    if (requestedLimit === 0) throw badRequest("limit must be a positive integer");
+    const limit = Math.min(requestedLimit ?? PIPELINE_ATTENTION_DEFAULT_LIMIT, PIPELINE_ATTENTION_MAX_LIMIT);
+    res.json(await listPipelineAttention(db, { companyId, caller, limit }));
+  });
+
+  router.get("/companies/:companyId/case-events", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertPipelineCompanyAccess(req, companyId);
+    const types = parseEventTypesQuery(req.query.types);
+    const requestedLimit = parseOptionalNonNegativeInteger(req.query.limit, "limit");
+    if (requestedLimit === 0) throw badRequest("limit must be a positive integer");
+    const limit = Math.min(requestedLimit ?? COMPANY_CASE_EVENTS_DEFAULT_LIMIT, COMPANY_CASE_EVENTS_MAX_LIMIT);
+    const offset = parseOptionalNonNegativeInteger(req.query.offset, "offset") ?? 0;
+    res.json(await listCompanyCaseEvents(db, { companyId, types, limit, offset }));
   });
 
   router.post("/companies/:companyId/pipelines", validate(createPipelineSchema), async (req, res) => {
@@ -557,7 +626,8 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
         q ? or(ilike(pipelineCases.title, `%${q}%`), ilike(pipelineCases.summary, `%${q}%`)) : undefined,
       ))
       .orderBy(asc(pipelineCases.createdAt));
-    res.json(rows);
+    const activeWork = await loadActiveWorkForCases(db, companyId, rows.map((row) => row.case.id));
+    res.json(rows.map((row) => ({ ...row, activeWork: activeWork.get(row.case.id) ?? null })));
   });
 
   router.get("/cases/:caseId", async (req, res) => {
@@ -792,6 +862,12 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     res.json(await svc.listCaseEventsPage(companyId, caseId, pagination));
   });
 
+  router.get("/cases/:caseId/children", async (req, res) => {
+    const caseId = req.params.caseId as string;
+    const companyId = await assertCaseAccess(db, req, caseId);
+    res.json(await getCaseChildrenTree(db, companyId, caseId));
+  });
+
   router.get("/cases/:caseId/rollup", async (req, res) => {
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
@@ -846,12 +922,13 @@ async function getCaseDetail(db: Db, companyId: string, caseId: string) {
     .limit(1)
     .then((rows) => rows[0] ?? null);
   if (!row) throw notFound("Pipeline case not found");
-  const [allowedNextStages, links, blockers, blocks, children] = await Promise.all([
+  const [allowedNextStages, links, blockers, blocks, childrenCounts, activeWorkByCase] = await Promise.all([
     db.select().from(pipelineStages).where(eq(pipelineStages.pipelineId, row.case.pipelineId)).orderBy(asc(pipelineStages.position)),
     db.select().from(pipelineCaseIssueLinks).where(and(eq(pipelineCaseIssueLinks.companyId, companyId), eq(pipelineCaseIssueLinks.caseId, caseId))),
     db.select().from(pipelineCaseBlockers).where(and(eq(pipelineCaseBlockers.companyId, companyId), eq(pipelineCaseBlockers.caseId, caseId))),
     db.select().from(pipelineCaseBlockers).where(and(eq(pipelineCaseBlockers.companyId, companyId), eq(pipelineCaseBlockers.blockedByCaseId, caseId))),
-    db.select().from(pipelineCases).where(and(eq(pipelineCases.companyId, companyId), eq(pipelineCases.parentCaseId, caseId))),
+    getDirectChildrenSummary(db, companyId, caseId),
+    loadActiveWorkForCases(db, companyId, [caseId]),
   ]);
   return {
     ...row,
@@ -862,8 +939,10 @@ async function getCaseDetail(db: Db, companyId: string, caseId: string) {
     childrenSummary: {
       childCount: row.case.childCount,
       terminalChildCount: row.case.terminalChildCount,
-      loadedChildren: children.length,
+      loadedChildren: childrenCounts.total,
+      ...childrenCounts,
     },
+    activeWork: activeWorkByCase.get(caseId) ?? null,
     pendingSuggestion: row.case.pendingSuggestion,
   };
 }
