@@ -55,6 +55,7 @@ import {
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
+  isClaudeImageProcessingError,
 } from "./parse.js";
 import { prepareClaudeConfigSeed, resolveSharedClaudeConfigDir } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
@@ -598,8 +599,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
   const hasMatchingPromptBundle =
     runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
+  const isValidUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runtimeSessionId);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
+    isValidUuid &&
     hasMatchingPromptBundle &&
     claudeSessionCwdMatchesExecutionTarget({
       runtimeSessionCwd,
@@ -608,9 +611,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }) &&
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
+  if (runtimeSessionId && !isValidUuid) {
+    await onLog(
+      "stdout",
+      `[paperclip] Claude session "${runtimeSessionId}" is not a valid UUID and will not be passed to --resume.\n`,
+    );
+  }
   if (
     executionTargetIsRemote &&
     runtimeSessionId &&
+    isValidUuid &&
     !canResumeSession
   ) {
     await onLog(
@@ -619,6 +629,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
   } else if (
     runtimeSessionId &&
+    isValidUuid &&
     runtimeSessionCwd.length > 0 &&
     path.resolve(runtimeSessionCwd) !== path.resolve(effectiveExecutionCwd)
   ) {
@@ -626,7 +637,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
     );
-  } else if (runtimeSessionId && !canResumeSession) {
+  } else if (runtimeSessionId && isValidUuid && !canResumeSession) {
     await onLog(
       "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
@@ -973,6 +984,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "unknown"
           : isClaudePoisonedPreviousMessageIdError(initial.parsed)
           ? "poisoned"
+          : isClaudeImageProcessingError(initial.parsed)
+          ? "image"
           : null
         : null;
 
@@ -980,6 +993,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const reason =
         sessionErrorKind === "poisoned"
           ? "returned a poisoned message-id"
+          : sessionErrorKind === "image"
+          ? "contains an unprocessable image"
           : "is unavailable";
       await onLog(
         "stdout",

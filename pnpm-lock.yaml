@@ -637,8 +637,6 @@ importers:
         specifier: ^24.6.0
         version: 24.12.0
 
-  packages/teams-catalog: {}
-
   server:
     dependencies:
       '@aws-sdk/client-s3':
