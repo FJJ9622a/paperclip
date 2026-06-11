@@ -30,6 +30,7 @@ export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
   enableIsolatedWorkspaces: boolean;
   enableStreamlinedLeftNavigation: boolean;
+  enableConferenceRoomChat: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableCloudSync: boolean;

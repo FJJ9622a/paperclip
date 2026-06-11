@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import { issueService } from "../services/index.js";
+import { instanceSettingsService, issueService } from "../services/index.js";
 import { getActorInfo } from "./authz.js";
 
 /**
@@ -61,6 +61,18 @@ export function boardChatRoutes(db: Db) {
   }
 
   router.post("/board/chat/stream", async (req, res) => {
+    // Conference Room Chat is an experimental surface (PAP-136/PAP-137): the
+    // API is gated alongside the UI so the endpoint is inert while the flag
+    // is off, not just hidden.
+    const experimental = await instanceSettingsService(db).getExperimental();
+    if (experimental.enableConferenceRoomChat !== true) {
+      res.status(403).json({
+        error: "Conference Room Chat is not enabled",
+        code: "FEATURE_DISABLED",
+      });
+      return;
+    }
+
     const { companyId, message, taskId } = req.body as {
       companyId?: string;
       message?: string;
