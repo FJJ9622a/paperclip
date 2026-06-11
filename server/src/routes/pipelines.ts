@@ -3,6 +3,7 @@ import { z } from "zod";
 import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   documents,
   documentRevisions,
   issues as issueRows,
@@ -41,7 +42,13 @@ import {
   PIPELINE_ATTENTION_MAX_LIMIT,
   type AttentionCaller,
 } from "../services/pipelines-aggregation.js";
+import { accessService } from "../services/access.js";
+import { issueService } from "../services/issues.js";
 import { assertCompanyAccess } from "./authz.js";
+import { computePipelineHealth, type PipelineHealthStageInput } from "@paperclipai/shared";
+
+/** Per-stage instructions document keys look like `stage-instructions:{stageId}`. */
+const STAGE_INSTRUCTIONS_PREFIX = "stage-instructions:";
 
 const stageKindSchema = z.enum(["open", "working", "review", "done", "cancelled"]);
 const jsonObjectSchema = z.record(z.string(), z.unknown());
@@ -433,9 +440,80 @@ async function writeRouteEvent(
   return event!;
 }
 
+async function getIssueMutationTarget(db: Db, input: { companyId: string; issueId: string }) {
+  return db
+    .select({
+      id: issueRows.id,
+      companyId: issueRows.companyId,
+      projectId: issueRows.projectId,
+      parentId: issueRows.parentId,
+      assigneeAgentId: issueRows.assigneeAgentId,
+      assigneeUserId: issueRows.assigneeUserId,
+      status: issueRows.status,
+    })
+    .from(issueRows)
+    .where(and(eq(issueRows.id, input.issueId), eq(issueRows.companyId, input.companyId)))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+}
+
+async function assertIssueLinkMutationAllowed(
+  req: Request,
+  input: {
+    access: ReturnType<typeof accessService>;
+    issuesSvc: ReturnType<typeof issueService>;
+    issue: NonNullable<Awaited<ReturnType<typeof getIssueMutationTarget>>>;
+  },
+) {
+  const decision = await input.access.decide({
+    actor: req.actor,
+    action: "issue:mutate",
+    resource: {
+      type: "issue",
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+      projectId: input.issue.projectId,
+      parentIssueId: input.issue.parentId,
+      assigneeAgentId: input.issue.assigneeAgentId,
+      assigneeUserId: input.issue.assigneeUserId,
+      status: input.issue.status,
+    },
+    scope: {
+      issueId: input.issue.id,
+      projectId: input.issue.projectId,
+      parentIssueId: input.issue.parentId,
+      assigneeAgentId: input.issue.assigneeAgentId,
+      assigneeUserId: input.issue.assigneeUserId,
+    },
+  });
+  if (!decision.allowed) {
+    throw forbidden("Issue is outside this actor's authorization boundary");
+  }
+  if (req.actor.type !== "agent") return;
+  const actorAgentId = req.actor.agentId;
+  if (!actorAgentId) throw forbidden("Agent authentication required");
+  if (input.issue.assigneeAgentId === null) return;
+  if (input.issue.assigneeAgentId !== actorAgentId) {
+    if (input.issue.status === "in_progress") {
+      throw conflict("Issue is checked out by another agent", {
+        issueId: input.issue.id,
+        assigneeAgentId: input.issue.assigneeAgentId,
+        actorAgentId,
+      });
+    }
+    throw forbidden("Agent cannot mutate another agent's issue");
+  }
+  if (input.issue.status !== "in_progress") return;
+  const runId = req.actor.runId?.trim();
+  if (!runId) throw unauthorized("Agent run id required");
+  await input.issuesSvc.assertCheckoutOwner(input.issue.id, actorAgentId, runId);
+}
+
 export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineService>[1] = {}) {
   const router = Router();
   const svc = pipelineService(db, options);
+  const access = accessService(db);
+  const issuesSvc = issueService(db);
 
   router.get("/companies/:companyId/pipelines", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -583,6 +661,72 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     ]);
     if (!pipeline) throw notFound("Pipeline not found");
     res.json({ ...pipeline, stages, transitions, documentKeys });
+  });
+
+  // Setup-health warnings: surface any configuration that won't actually run
+  // (paused teammate, missing instructions, no approver, broken hand-off links,
+  // unset required details) in plain prosumer language. Assembles the cross-
+  // entity inputs the pure `computePipelineHealth` needs.
+  router.get("/pipelines/:pipelineId/health", async (req, res) => {
+    const pipelineId = req.params.pipelineId as string;
+    const companyId = await assertPipelineAccess(db, req, pipelineId);
+    const [pipeline, stages, instructionDocs, companyAgents, companyPipelines, companyStages] = await Promise.all([
+      db.select().from(pipelines)
+        .where(and(eq(pipelines.id, pipelineId), eq(pipelines.companyId, companyId)))
+        .then((rows) => rows[0] ?? null),
+      db.select().from(pipelineStages).where(eq(pipelineStages.pipelineId, pipelineId)).orderBy(asc(pipelineStages.position)),
+      db.select({ key: pipelineDocuments.key, body: documentRevisions.body })
+        .from(pipelineDocuments)
+        .innerJoin(documents, eq(pipelineDocuments.documentId, documents.id))
+        .leftJoin(documentRevisions, eq(documents.latestRevisionId, documentRevisions.id))
+        .where(and(
+          eq(pipelineDocuments.companyId, companyId),
+          eq(pipelineDocuments.pipelineId, pipelineId),
+          ilike(pipelineDocuments.key, `${STAGE_INSTRUCTIONS_PREFIX}%`),
+        )),
+      db.select({ id: agents.id, name: agents.name, status: agents.status })
+        .from(agents)
+        .where(eq(agents.companyId, companyId)),
+      db.select({ id: pipelines.id, name: pipelines.name })
+        .from(pipelines)
+        .where(eq(pipelines.companyId, companyId)),
+      db.select({ pipelineId: pipelineStages.pipelineId, key: pipelineStages.key, name: pipelineStages.name })
+        .from(pipelineStages)
+        .innerJoin(pipelines, eq(pipelineStages.pipelineId, pipelines.id))
+        .where(eq(pipelines.companyId, companyId)),
+    ]);
+    if (!pipeline) throw notFound("Pipeline not found");
+
+    const bodyByStageId = new Map<string, string>();
+    for (const doc of instructionDocs) {
+      if (!doc.key.startsWith(STAGE_INSTRUCTIONS_PREFIX)) continue;
+      bodyByStageId.set(doc.key.slice(STAGE_INSTRUCTIONS_PREFIX.length), doc.body ?? "");
+    }
+
+    const agentsById: Record<string, { id: string; name: string | null; status: string }> = {};
+    for (const agent of companyAgents) agentsById[agent.id] = agent;
+
+    const stagesByPipelineId = new Map<string, Array<{ key: string; name: string }>>();
+    for (const stage of companyStages) {
+      const list = stagesByPipelineId.get(stage.pipelineId) ?? [];
+      list.push({ key: stage.key, name: stage.name });
+      stagesByPipelineId.set(stage.pipelineId, list);
+    }
+    const pipelinesById: Record<string, { id: string; name: string; stages: Array<{ key: string; name: string }> }> = {};
+    for (const p of companyPipelines) {
+      pipelinesById[p.id] = { id: p.id, name: p.name, stages: stagesByPipelineId.get(p.id) ?? [] };
+    }
+
+    const healthStages: PipelineHealthStageInput[] = stages.map((stage) => ({
+      id: stage.id,
+      key: stage.key,
+      name: stage.name,
+      kind: stage.kind,
+      config: (stage.config ?? null) as Record<string, unknown> | null,
+      instructionsBody: bodyByStageId.get(stage.id) ?? "",
+    }));
+
+    res.json(computePipelineHealth({ pipelineId, stages: healthStages, agentsById, pipelinesById }));
   });
 
   router.get("/pipelines/:pipelineId/intake-form", async (req, res) => {
@@ -1097,13 +1241,9 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
     const actor = actorForMutation(req);
-    const targetIssue = await db
-      .select({ id: issueRows.id, companyId: issueRows.companyId })
-      .from(issueRows)
-      .where(eq(issueRows.id, req.body.issueId))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (!targetIssue || targetIssue.companyId !== companyId) throw notFound("Issue not found");
+    const targetIssue = await getIssueMutationTarget(db, { companyId, issueId: req.body.issueId });
+    if (!targetIssue) throw notFound("Issue not found");
+    await assertIssueLinkMutationAllowed(req, { access, issuesSvc, issue: targetIssue });
     try {
       const link = await db.transaction(async (tx) => {
         const [created] = await tx.insert(pipelineCaseIssueLinks).values({
@@ -1133,6 +1273,20 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const linkId = req.params.linkId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
     const actor = actorForMutation(req);
+    const existingLink = await db
+      .select({ issueId: pipelineCaseIssueLinks.issueId })
+      .from(pipelineCaseIssueLinks)
+      .where(and(
+        eq(pipelineCaseIssueLinks.id, linkId),
+        eq(pipelineCaseIssueLinks.companyId, companyId),
+        eq(pipelineCaseIssueLinks.caseId, caseId),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!existingLink) throw notFound("Pipeline case issue link not found");
+    const targetIssue = await getIssueMutationTarget(db, { companyId, issueId: existingLink.issueId });
+    if (!targetIssue) throw notFound("Issue not found");
+    await assertIssueLinkMutationAllowed(req, { access, issuesSvc, issue: targetIssue });
     const deleted = await db.transaction(async (tx) => {
       const [removed] = await tx
         .delete(pipelineCaseIssueLinks)
@@ -1149,10 +1303,9 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
         type: "issue_unlinked",
         actor,
         payload: { issueId: removed.issueId, role: removed.role, linkId: removed.id },
-      });
+        });
       return removed;
     });
-    if (!deleted) throw notFound("Pipeline case issue link not found");
     res.json({ deleted: true });
   });
 

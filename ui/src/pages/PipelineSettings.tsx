@@ -57,7 +57,8 @@ import { formatPipelineItemEvent } from "../lib/pipeline-item-detail";
 import { queryKeys } from "../lib/queryKeys";
 import { getRecentAssigneeIds, sortAgentsByRecency } from "../lib/recent-assignees";
 import { cn, relativeTime } from "../lib/utils";
-import { Link, useNavigate, useParams } from "@/lib/router";
+import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { StageHealthWarnings } from "../components/PipelineHealthWarnings";
 
 type SettingsTab = "stages" | "guidance";
 type StageSectionKey = "overview" | "instructions" | "secrets" | "runs" | "activity" | "history";
@@ -446,6 +447,7 @@ export function PipelineSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<SettingsTab>("stages");
   const [activeStageSection, setActiveStageSection] = useState<StageSectionKey>("overview");
@@ -495,6 +497,12 @@ export function PipelineSettings() {
     queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none"],
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const healthQuery = useQuery({
+    queryKey: pipelineId ? queryKeys.pipelines.health(pipelineId) : ["pipelines", "health", "none"],
+    queryFn: () => pipelinesApi.getHealth(pipelineId!),
+    enabled: !!pipelineId && !!selectedCompanyId,
   });
 
   const usersQuery = useQuery({
@@ -614,6 +622,15 @@ export function PipelineSettings() {
       { label: "Settings" },
     ]);
   }, [pipeline, setBreadcrumbs]);
+
+  // Deep-link from a board-header health warning: ?stage=<id> preselects the
+  // flagged stage so the warning's "fix" lands on the right panel.
+  const requestedStageId = searchParams.get("stage");
+  useEffect(() => {
+    if (requestedStageId && stages.some((stage) => stage.id === requestedStageId)) {
+      setSelectedStageId(requestedStageId);
+    }
+  }, [requestedStageId, stages]);
 
   useEffect(() => {
     if (!selectedStageId && stages[0]) {
@@ -1132,6 +1149,13 @@ export function PipelineSettings() {
                       </Button>
                     ) : null}
                   </div>
+
+                  <StageHealthWarnings
+                    className="mb-4"
+                    warnings={(healthQuery.data?.warnings ?? []).filter(
+                      (warning) => warning.stageId === selectedStage.id,
+                    )}
+                  />
 
                   {activeStageSection === "overview" ? (
                     <div className="w-full max-w-3xl">

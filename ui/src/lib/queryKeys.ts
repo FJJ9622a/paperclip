@@ -128,6 +128,7 @@ export const queryKeys = {
     caseEvents: (caseId: string) => ["pipelines", "item", caseId, "events"] as const,
     caseIssueLinks: (caseId: string) => ["pipelines", "item", caseId, "issue-links"] as const,
     intakeForm: (pipelineId: string) => ["pipelines", "intake-form", pipelineId] as const,
+    health: (pipelineId: string) => ["pipelines", "health", pipelineId] as const,
     document: (pipelineId: string, key: string) => ["pipelines", "document", pipelineId, key] as const,
     documentRevisions: (pipelineId: string, key: string) =>
       ["pipelines", "document-revisions", pipelineId, key] as const,

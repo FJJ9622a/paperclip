@@ -56,6 +56,7 @@ import { issuesApi } from "../api/issues";
 import { EmptyState } from "../components/EmptyState";
 import { IssueChatThread } from "../components/IssueChatThread";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { PipelineHealthBar } from "../components/PipelineHealthWarnings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
@@ -1083,6 +1084,11 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
     queryFn: () => pipelinesApi.listCases(pipelineId),
   });
 
+  const healthQuery = useQuery({
+    queryKey: queryKeys.pipelines.health(pipelineId),
+    queryFn: () => pipelinesApi.getHealth(pipelineId),
+  });
+
   const pipeline = pipelineQuery.data;
   const cases = useMemo<BoardCase[]>(
     () => (casesQuery.data ?? []).map((row) => ({ ...row.case, activeWork: row.activeWork ?? null })),
@@ -1293,6 +1299,11 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
           </Button>
         </div>
       </div>
+
+      <PipelineHealthBar
+        warnings={healthQuery.data?.warnings ?? []}
+        onSelectStage={(stageId) => navigate(`/pipelines/${pipelineId}/settings?stage=${stageId}`)}
+      />
 
       {guardrailsActive ? (
         <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-300/30 dark:bg-amber-400/10 dark:text-amber-200">

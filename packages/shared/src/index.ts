@@ -15,6 +15,18 @@ export {
   type AgentWorkEligibility,
 } from "./agent-eligibility.js";
 export {
+  computePipelineHealth,
+  groupWarningsByStage,
+  type PipelineHealthAgentRef,
+  type PipelineHealthInput,
+  type PipelineHealthPipelineRef,
+  type PipelineHealthReport,
+  type PipelineHealthStageInput,
+  type PipelineHealthStageRef,
+  type PipelineHealthWarning,
+  type PipelineHealthWarningCode,
+} from "./pipeline-health.js";
+export {
   asBoolean,
   asString,
   asStringArray,

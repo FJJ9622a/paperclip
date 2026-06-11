@@ -1,5 +1,7 @@
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, PipelineHealthReport } from "@paperclipai/shared";
 import { api } from "./client";
+
+export type { PipelineHealthReport, PipelineHealthWarning } from "@paperclipai/shared";
 
 export type PipelineConnectionRef =
   | string
@@ -351,6 +353,7 @@ export const pipelinesApi = {
     data: { key: string; name: string; description?: string | null; projectId?: string | null },
   ) => api.post<PipelineListItem & { stages?: PipelineStage[] }>(`/companies/${companyId}/pipelines`, data),
   get: (pipelineId: string) => api.get<PipelineDetail>(`/pipelines/${pipelineId}`),
+  getHealth: (pipelineId: string) => api.get<PipelineHealthReport>(`/pipelines/${pipelineId}/health`),
   update: (
     pipelineId: string,
     data: { name?: string; description?: string | null; enforceTransitions?: boolean; archived?: boolean },
