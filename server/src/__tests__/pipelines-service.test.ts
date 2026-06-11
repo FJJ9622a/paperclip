@@ -1223,6 +1223,67 @@ describeEmbeddedPostgres("pipelineService", () => {
     expect(rootEvents.map((event) => event.type)).toEqual(["ingested", "children_terminal", "transitioned"]);
   });
 
+  it("auto-advances on entering a stage whose children are already terminal", async () => {
+    const company = await seedCompany();
+    const pipeline = await svc.createPipeline({
+      companyId: company.id,
+      key: "entry-auto-advance",
+      name: "Entry auto advance",
+      actor: userActor,
+      stages: [
+        { key: "review", name: "Review", kind: "open" },
+        { key: "producing", name: "Producing", kind: "working", config: { autoAdvanceOnChildrenTerminal: "covered", requireChildrenTerminal: true } },
+        { key: "covered", name: "Covered", kind: "done" },
+        { key: "cancelled", name: "Cancelled", kind: "cancelled" },
+      ],
+    });
+    const root = await svc.ingestCase({ companyId: company.id, pipelineId: pipeline.id, caseKey: "entry-root", title: "Root", actor: userActor });
+    const child = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "entry-child",
+      title: "Child",
+      parentCaseId: root.case.id,
+      actor: userActor,
+    });
+
+    // Child goes terminal while the root is still in review (no auto-advance
+    // configured there) — the one-shot children_terminal event is consumed.
+    await svc.transitionCase({ companyId: company.id, caseId: child.case.id, toStageKey: "cancelled", expectedVersion: 1, actor: userActor });
+    let [freshRoot] = await db.select().from(pipelineCases).where(eq(pipelineCases.id, root.case.id));
+    expect(freshRoot!.terminalKind).toBeNull();
+
+    // Entering producing with all children already terminal must chain to covered.
+    await svc.transitionCase({ companyId: company.id, caseId: root.case.id, toStageKey: "producing", expectedVersion: 1, actor: userActor });
+    [freshRoot] = await db.select().from(pipelineCases).where(eq(pipelineCases.id, root.case.id));
+    const covered = pipeline.stages.find((stage) => stage.key === "covered")!;
+    expect(freshRoot!.stageId).toBe(covered.id);
+    expect(freshRoot!.terminalKind).toBe("done");
+  });
+
+  it("does not auto-advance on stage entry when the case has no children", async () => {
+    const company = await seedCompany();
+    const pipeline = await svc.createPipeline({
+      companyId: company.id,
+      key: "entry-no-children",
+      name: "Entry no children",
+      actor: userActor,
+      stages: [
+        { key: "review", name: "Review", kind: "open" },
+        { key: "producing", name: "Producing", kind: "working", config: { autoAdvanceOnChildrenTerminal: "covered" } },
+        { key: "covered", name: "Covered", kind: "done" },
+        { key: "cancelled", name: "Cancelled", kind: "cancelled" },
+      ],
+    });
+    const root = await svc.ingestCase({ companyId: company.id, pipelineId: pipeline.id, caseKey: "lone-root", title: "Root", actor: userActor });
+
+    await svc.transitionCase({ companyId: company.id, caseId: root.case.id, toStageKey: "producing", expectedVersion: 1, actor: userActor });
+    const [freshRoot] = await db.select().from(pipelineCases).where(eq(pipelineCases.id, root.case.id));
+    const producing = pipeline.stages.find((stage) => stage.key === "producing")!;
+    expect(freshRoot!.stageId).toBe(producing.id);
+    expect(freshRoot!.terminalKind).toBeNull();
+  });
+
   it("dispatches stage-entry automation created by cascaded child-terminal auto-advance", async () => {
     const company = await seedCompany();
     const routine = await seedRoutine(company.id, "Assembly on enter");

@@ -1502,6 +1502,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       reason?: string | null;
       force?: boolean;
       automationLedgers?: Array<typeof pipelineAutomationExecutions.$inferSelect>;
+      autoAdvanceVisitedStageIds?: Set<string>;
     },
   ) {
     if (input.transitionClass === "auto") {
@@ -1626,7 +1627,58 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     if (!wasTerminal && isTerminal) {
       await handleChildrenTerminal(tx, input.companyId, current.parentCaseId, input.automationLedgers);
     }
+    if (!isTerminal) {
+      await maybeAutoAdvanceOnStageEntry(tx, {
+        companyId: input.companyId,
+        caseRow: updated,
+        stage: toStage,
+        automationLedgers: input.automationLedgers,
+        visitedStageIds: input.autoAdvanceVisitedStageIds,
+      });
+    }
     return { case: updated, event, automationLedger: ledger };
+  }
+
+  // A case can enter an auto-advance stage after its children are already
+  // terminal (e.g. children triaged during review, then the case moves to
+  // producing). handleChildrenTerminal only fires when a child transitions,
+  // so without this entry-time check the case would strand forever.
+  async function maybeAutoAdvanceOnStageEntry(
+    tx: PipelineDb,
+    input: {
+      companyId: string;
+      caseRow: typeof pipelineCases.$inferSelect;
+      stage: typeof pipelineStages.$inferSelect;
+      automationLedgers?: Array<typeof pipelineAutomationExecutions.$inferSelect>;
+      visitedStageIds?: Set<string>;
+    },
+  ) {
+    const toStageKey = stageConfig(input.stage).autoAdvanceOnChildrenTerminal;
+    if (typeof toStageKey !== "string" || !toStageKey) return;
+    const visited = input.visitedStageIds ?? new Set<string>();
+    if (visited.has(input.stage.id)) return;
+    const rollup = await computeCaseRollup(tx, input.companyId, input.caseRow.id);
+    if (!rollup.complete || rollup.total === 0) return;
+    const toStage = await getStageByKeyOrThrow(tx, input.caseRow.pipelineId, toStageKey);
+    if (toStage.id === input.stage.id) return;
+    visited.add(input.stage.id);
+    try {
+      assertStageEnabled(toStage, "auto_advance");
+      await transitionCaseInTransaction(tx, {
+        companyId: input.companyId,
+        caseId: input.caseRow.id,
+        toStageKey,
+        expectedVersion: input.caseRow.version,
+        actor: { type: "system" },
+        reason: "children_terminal",
+        automationLedgers: input.automationLedgers,
+        autoAdvanceVisitedStageIds: visited,
+      });
+    } catch (error) {
+      // Best-effort: an unsatisfied gate (drift, approval) on the chained
+      // advance must not roll back the transition that entered this stage.
+      if (!(error instanceof HttpError)) throw error;
+    }
   }
 
   async function handleChildrenTerminal(
