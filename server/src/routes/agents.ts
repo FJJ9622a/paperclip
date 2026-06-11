@@ -65,6 +65,7 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
 import {
   detectAdapterModel,
@@ -1310,10 +1311,6 @@ export function agentRoutes(
       out.set(entry.key, entry);
     }
     return Array.from(out.values());
-  }
-
-  function skillVersionSelectionMap(entries: Array<{ key: string; versionId: string | null }>) {
-    return new Map(entries.map((entry) => [entry.key, entry.versionId] as const));
   }
 
   // Legacy hardcoded set — used as fallback when adapter module does not

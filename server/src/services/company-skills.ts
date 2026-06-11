@@ -2753,6 +2753,7 @@ export function companySkillService(db: Db) {
           eq(companySkillComments.companyId, companyId),
           eq(companySkillComments.companySkillId, skillId),
           eq(companySkillComments.id, input.parentCommentId),
+          isNull(companySkillComments.deletedAt),
         ))
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent comment not found");
@@ -2911,7 +2912,7 @@ export function companySkillService(db: Db) {
         forkedFromCompanyId: source.companyId,
         updatedAt: new Date(),
       })
-      .where(eq(companySkills.id, forked.id));
+      .where(and(eq(companySkills.id, forked.id), eq(companySkills.companyId, companyId)));
     await db
       .update(companySkills)
       .set({

@@ -188,6 +188,7 @@ import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
+import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
@@ -558,10 +559,6 @@ export function applyRunScopedMentionedSkillKeys(
     ...existingPreference.desiredSkillEntries,
     ...normalizedSkillKeys,
   ]);
-}
-
-function skillVersionSelectionMap(entries: Array<{ key: string; versionId: string | null }>) {
-  return new Map(entries.map((entry) => [entry.key, entry.versionId] as const));
 }
 
 export function computeBoundedTransientHeartbeatRetrySchedule(
