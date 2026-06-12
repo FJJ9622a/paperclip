@@ -31,7 +31,7 @@ export const defaultCreateValues: CreateConfigValues = {
   // openclaw_gateway defaults
   authToken: "",
   agentId: "",
-  sessionKeyStrategy: "",
+  sessionKeyStrategy: "issue",
   sessionKey: "",
   timeoutSec: undefined,
   waitTimeoutMs: undefined,
