@@ -163,6 +163,23 @@ function findButton(container: HTMLElement, text: string) {
     | undefined;
 }
 
+async function chooseStepType(container: HTMLElement, label: string) {
+  const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Step type"]')!;
+  flushSync(() => {
+    trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, ctrlKey: false }));
+  });
+  await flushQueries();
+
+  const item = Array.from(document.body.querySelectorAll('[role="menuitemradio"]')).find((menuItem) =>
+    menuItem.textContent?.includes(label),
+  ) as HTMLElement | undefined;
+  expect(item).toBeTruthy();
+  flushSync(() => {
+    item!.click();
+  });
+  await flushQueries();
+}
+
 describe("PipelineSettings", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
@@ -273,18 +290,22 @@ describe("PipelineSettings", () => {
     const { container, root, queryClient } = renderSettings();
     await flushQueries();
 
+    const stepTypeTrigger = container.querySelector<HTMLButtonElement>('button[aria-label="Step type"]')!;
+    expect(stepTypeTrigger).toBeTruthy();
+    expect(stepTypeTrigger.textContent).toContain("Working");
+    expect(stepTypeTrigger.querySelector("svg")).not.toBeNull();
+    expect(container.textContent).toContain("Items wait here while work happens.");
+    expect(container.querySelector('input[name="stage-kind"]')).toBeNull();
     expect(container.querySelector('[aria-label="Approval picker"]')).toBeNull();
     expect(container.textContent).not.toContain("Require approval");
     expect(container.textContent).not.toContain("Any human");
 
-    const reviewKind = container.querySelector<HTMLInputElement>('input[name="stage-kind"][value="review"]')!;
-    flushSync(() => {
-      reviewKind.click();
-    });
+    await chooseStepType(container, "Review");
 
     expect(container.querySelector('[aria-label="Approval picker"]')).toBeNull();
     expect(container.textContent).toContain("Approver");
     expect(container.textContent).toContain("Any human");
+    expect(container.textContent).toContain("Someone has to approve before items leave.");
 
     flushSync(() => {
       root.unmount();

@@ -10,9 +10,14 @@ import {
   Activity as ActivityIcon,
   AlertTriangle,
   Archive,
+  BadgeCheck,
+  Ban,
   Check,
+  ChevronDown,
   Circle,
+  CircleCheck,
   GitBranch,
+  Hammer,
   History as HistoryIcon,
   Hexagon,
   KeyRound,
@@ -50,6 +55,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -131,26 +138,35 @@ const STAGE_SECTION_TITLES: Record<StageSectionKey, string> = {
   advanced: "Advanced",
 };
 
-const STAGE_KIND_OPTIONS: Array<{ value: EditableStageKind; label: string; description: string }> = [
+const STAGE_KIND_OPTIONS: Array<{
+  value: EditableStageKind;
+  label: string;
+  description: string;
+  icon: typeof Circle;
+}> = [
   {
     value: "working",
     label: "Working",
     description: "Items wait here while work happens. An agent or a person moves them forward.",
+    icon: Hammer,
   },
   {
     value: "review",
     label: "Review",
     description: "Someone has to approve before items leave. Use this when a person or an agent has to say yes or no.",
+    icon: BadgeCheck,
   },
   {
     value: "done",
     label: "Done",
     description: "The final step. Items that reach here are finished.",
+    icon: CircleCheck,
   },
   {
     value: "cancelled",
     label: "Cancelled",
     description: "The dead end. Items that reach here are dropped or rejected.",
+    icon: Ban,
   },
 ];
 
@@ -1000,6 +1016,9 @@ export function PipelineSettings() {
         transitionTargetIds: [...transitionTargets].sort(),
       }
     : null;
+  const selectedStageKindOption =
+    STAGE_KIND_OPTIONS.find((option) => option.value === stageKind) ?? STAGE_KIND_OPTIONS[0]!;
+  const SelectedStageKindIcon = selectedStageKindOption.icon;
   const instructionsBodyDirty = selectedStage != null && instructionsBody !== savedInstructionsBody;
   const variablesDirty =
     selectedStage != null &&
@@ -1214,29 +1233,48 @@ export function PipelineSettings() {
                           <Input value={stageName} onChange={(event) => setStageName(event.target.value)} required />
                         </FieldRow>
                         <FieldRow label="Step type">
-                          <div className="space-y-2">
-                            {STAGE_KIND_OPTIONS.map((option) => (
-                              <label
-                                key={option.value}
-                                className={cn(
-                                  "flex gap-3 rounded-md border border-border px-3 py-2.5 text-sm transition-colors",
-                                  stageKind === option.value && "border-foreground bg-accent/40",
-                                )}
-                              >
-                                <input
-                                  type="radio"
-                                  name="stage-kind"
-                                  value={option.value}
-                                  checked={stageKind === option.value}
-                                  onChange={() => setStageKindWithDefaults(option.value)}
-                                  className="mt-1"
-                                />
-                                <span className="min-w-0">
-                                  <span className="block font-medium text-foreground">{option.label}</span>
-                                  <span className="mt-0.5 block text-muted-foreground">{option.description}</span>
-                                </span>
-                              </label>
-                            ))}
+                          <div className="max-w-xl space-y-2">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  aria-label="Step type"
+                                  className="h-auto min-h-10 w-full justify-between whitespace-normal px-3 py-2 text-left"
+                                >
+                                  <span className="flex min-w-0 items-center gap-2">
+                                    <SelectedStageKindIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                    <span className="truncate">{selectedStageKindOption.label}</span>
+                                  </span>
+                                  <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="start" className="w-[min(24rem,calc(100vw-2rem))]">
+                                <DropdownMenuRadioGroup value={stageKind} onValueChange={setStageKindWithDefaults}>
+                                  {STAGE_KIND_OPTIONS.map((option) => {
+                                    const Icon = option.icon;
+                                    return (
+                                      <DropdownMenuRadioItem
+                                        key={option.value}
+                                        value={option.value}
+                                        className="items-start gap-3 py-2.5"
+                                      >
+                                        <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                                        <span className="min-w-0">
+                                          <span className="block font-medium text-foreground">{option.label}</span>
+                                          <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
+                                            {option.description}
+                                          </span>
+                                        </span>
+                                      </DropdownMenuRadioItem>
+                                    );
+                                  })}
+                                </DropdownMenuRadioGroup>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                            <p className="text-sm leading-6 text-muted-foreground">
+                              {selectedStageKindOption.description}
+                            </p>
                           </div>
                         </FieldRow>
 
