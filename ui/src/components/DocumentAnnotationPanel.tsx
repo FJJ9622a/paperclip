@@ -105,6 +105,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
   const queryClient = useQueryClient();
   const [composerValue, setComposerValue] = useState("");
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [mutationError, setMutationError] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const bodyTestId = props.isMobile ? "document-annotation-panel" : undefined;
   const annotationTarget = useMemo<DocumentAnnotationTarget>(() => {
@@ -182,6 +183,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
     onMutate: async (body: string) => {
       const anchor = props.pendingAnchor;
       if (!anchor || !props.baseRevisionId) return undefined;
+      setMutationError(null);
       await queryClient.cancelQueries({ queryKey: annotationsQueryKey });
       const previous = queryClient.getQueryData<DocumentAnnotationThreadWithComments[]>(annotationsQueryKey);
       const optimisticThread = buildOptimisticThread({
@@ -199,16 +201,16 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
         annotationsQueryKey,
         (current) => [...(current ?? []), optimisticThread],
       );
-      // Clear the composer immediately — the optimistic thread now carries the text.
-      props.onClearPendingAnchor();
-      setComposerValue("");
       props.onFocusThread(optimisticThread.id);
       return { previous, optimisticId: optimisticThread.id };
     },
-    onError: (_error, _body, context) => {
+    onError: (error, _body, context) => {
       if (context?.previous) {
         queryClient.setQueryData(annotationsQueryKey, context.previous);
       }
+      setMutationError(error instanceof Error && error.message
+        ? error.message
+        : "Failed to create comment.");
     },
     onSuccess: (thread, _body, context) => {
       // Swap the optimistic placeholder for the real thread before refetch settles.
@@ -218,6 +220,9 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
           entry.id === context?.optimisticId ? thread : entry,
         ),
       );
+      props.onClearPendingAnchor();
+      setComposerValue("");
+      setMutationError(null);
       props.onFocusThread(thread.id);
     },
     onSettled: () => invalidateAll(),
@@ -228,6 +233,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
       documentAnnotationsApi.addCommentForTarget(annotationTarget, threadId, { body }),
     // Optimistically append the reply so it stays on screen through the round-trip.
     onMutate: async ({ threadId, body }) => {
+      setMutationError(null);
       await queryClient.cancelQueries({ queryKey: annotationsQueryKey });
       const previous = queryClient.getQueryData<DocumentAnnotationThreadWithComments[]>(annotationsQueryKey);
       const optimisticComment = buildOptimisticComment({
@@ -244,13 +250,19 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
             : thread,
         ),
       );
-      setReplyDrafts((current) => ({ ...current, [threadId]: "" }));
       return { previous };
     },
-    onError: (_error, _variables, context) => {
+    onError: (error, _variables, context) => {
       if (context?.previous) {
         queryClient.setQueryData(annotationsQueryKey, context.previous);
       }
+      setMutationError(error instanceof Error && error.message
+        ? error.message
+        : "Failed to add reply.");
+    },
+    onSuccess: (_comment, variables) => {
+      setReplyDrafts((current) => ({ ...current, [variables.threadId]: "" }));
+      setMutationError(null);
     },
     onSettled: () => invalidateAll(),
   });
@@ -259,6 +271,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
     mutationFn: ({ threadId, status }: { threadId: string; status: DocumentAnnotationThreadStatus }) =>
       documentAnnotationsApi.updateStatusForTarget(annotationTarget, threadId, status),
     onMutate: async ({ threadId, status }) => {
+      setMutationError(null);
       await queryClient.cancelQueries({ queryKey: annotationsQueryKey });
       const previous = queryClient.getQueryData<DocumentAnnotationThreadWithComments[]>(annotationsQueryKey);
       queryClient.setQueryData<DocumentAnnotationThreadWithComments[]>(
@@ -269,11 +282,15 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
       );
       return { previous };
     },
-    onError: (_error, _variables, context) => {
+    onError: (error, _variables, context) => {
       if (context?.previous) {
         queryClient.setQueryData(annotationsQueryKey, context.previous);
       }
+      setMutationError(error instanceof Error && error.message
+        ? error.message
+        : "Failed to update comment status.");
     },
+    onSuccess: () => setMutationError(null),
     onSettled: () => invalidateAll(),
   });
 
@@ -334,6 +351,14 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
           className="border-b border-border bg-muted px-3 py-1.5 text-[11px] text-muted-foreground"
         >
           {props.newCommentDisabledReason}
+        </p>
+      ) : null}
+      {mutationError ? (
+        <p
+          data-testid="document-annotation-error"
+          className="border-b border-border bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive"
+        >
+          {mutationError}
         </p>
       ) : null}
       <div ref={listScrollRef} className="min-h-0 flex-1 overflow-y-auto bg-popover px-3 py-2">
@@ -409,11 +434,6 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
             disabled={props.newCommentDisabled}
             className="resize-y rounded-none text-sm"
           />
-          {createThread.isError ? (
-            <p className="mt-1 text-xs text-destructive">
-              {(createThread.error as Error).message || "Failed to create comment"}
-            </p>
-          ) : null}
           <div className="mt-2 flex items-center justify-end gap-2">
             <Button
               type="button"

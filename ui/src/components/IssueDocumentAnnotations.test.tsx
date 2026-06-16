@@ -13,13 +13,31 @@ import {
   IssueDocumentAnnotations,
 } from "./IssueDocumentAnnotations";
 
-const mockAnnotationsApi = vi.hoisted(() => ({
-  list: vi.fn(),
-  get: vi.fn(),
-  create: vi.fn(),
-  addComment: vi.fn(),
-  updateStatus: vi.fn(),
-}));
+const mockAnnotationsApi = vi.hoisted(() => {
+  const api = {
+    list: vi.fn(),
+    listForTarget: vi.fn(),
+    get: vi.fn(),
+    getForTarget: vi.fn(),
+    create: vi.fn(),
+    createForTarget: vi.fn(),
+    addComment: vi.fn(),
+    addCommentForTarget: vi.fn(),
+    updateStatus: vi.fn(),
+    updateStatusForTarget: vi.fn(),
+  };
+  api.listForTarget.mockImplementation((target, options) =>
+    target.kind === "issue" ? api.list(target.issueId, target.documentKey, options) : api.list(target.routineId, target.documentKey, options));
+  api.getForTarget.mockImplementation((target, threadId) =>
+    target.kind === "issue" ? api.get(target.issueId, target.documentKey, threadId) : api.get(target.routineId, target.documentKey, threadId));
+  api.createForTarget.mockImplementation((target, data) =>
+    target.kind === "issue" ? api.create(target.issueId, target.documentKey, data) : api.create(target.routineId, target.documentKey, data));
+  api.addCommentForTarget.mockImplementation((target, threadId, data) =>
+    target.kind === "issue" ? api.addComment(target.issueId, target.documentKey, threadId, data) : api.addComment(target.routineId, target.documentKey, threadId, data));
+  api.updateStatusForTarget.mockImplementation((target, threadId, status) =>
+    target.kind === "issue" ? api.updateStatus(target.issueId, target.documentKey, threadId, status) : api.updateStatus(target.routineId, target.documentKey, threadId, status));
+  return api;
+});
 
 const mockPendingAnchor = vi.hoisted(() => ({
   selector: {
@@ -714,6 +732,54 @@ describe("IssueDocumentAnnotations", () => {
     expect(mockAnnotationsApi.list.mock.calls.length).toBeGreaterThan(1);
   });
 
+  it("keeps the composer visible with the draft when creating a thread fails", async () => {
+    mockAnnotationsApi.list.mockResolvedValue([]);
+    mockAnnotationsApi.create.mockRejectedValue(new Error("Annotation anchor does not match the current document revision"));
+    const root = createRoot(container);
+    const queryClient = makeQueryClient();
+    const doc = makeDoc();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Harness doc={doc} initialPanelOpen />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const selectButton = container.querySelector('[data-testid="mock-annotation-selection"]') as HTMLButtonElement | null;
+    expect(selectButton).not.toBeNull();
+    await act(async () => {
+      selectButton!.click();
+    });
+    await flush();
+
+    const composer = container.querySelector('[data-testid="document-annotation-composer"]') as HTMLTextAreaElement | null;
+    expect(composer).not.toBeNull();
+    await act(async () => {
+      setTextareaValue(composer!, "New anchored comment");
+    });
+    await flush();
+
+    const submit = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Comment",
+    );
+    expect(submit).not.toBeUndefined();
+    await act(async () => {
+      submit!.click();
+    });
+    await flush();
+    await flush();
+
+    const composerAfterFailure = container.querySelector('[data-testid="document-annotation-composer"]') as HTMLTextAreaElement | null;
+    expect(composerAfterFailure).not.toBeNull();
+    expect(composerAfterFailure!.value).toBe("New anchored comment");
+    expect(container.querySelector('[data-testid="document-annotation-error"]')?.textContent)
+      .toContain("Annotation anchor does not match the current document revision");
+  });
+
   it("submits a new anchored comment with ⌘↵", async () => {
     mockAnnotationsApi.list.mockResolvedValue([]);
     mockAnnotationsApi.create.mockResolvedValue(makeThread({ id: "created-1" }));
@@ -785,6 +851,52 @@ describe("IssueDocumentAnnotations", () => {
     expect(mockAnnotationsApi.addComment).toHaveBeenCalledWith("issue-1", "plan", "open-1", {
       body: "Replying via shortcut",
     });
+  });
+
+  it("keeps a reply draft visible when submitting the reply fails", async () => {
+    mockAnnotationsApi.list.mockResolvedValue([makeThread({ id: "open-1" })]);
+    mockAnnotationsApi.addComment.mockRejectedValue(new Error("Failed to add reply"));
+    const root = createRoot(container);
+    const queryClient = makeQueryClient();
+    const doc = makeDoc();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Harness doc={doc} initialPanelOpen />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const openThread = container.querySelector('[data-thread-id="open-1"]') as HTMLElement | null;
+    expect(openThread).not.toBeNull();
+    await act(async () => openThread!.click());
+    await flush();
+
+    const reply = container.querySelector(
+      '[data-testid="document-annotation-reply-open-1"]',
+    ) as HTMLTextAreaElement | null;
+    expect(reply).not.toBeNull();
+    await act(async () => setTextareaValue(reply!, "Reply should stay visible"));
+    await flush();
+
+    const replyButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Reply",
+    );
+    expect(replyButton).not.toBeUndefined();
+    await act(async () => replyButton!.click());
+    await flush();
+    await flush();
+
+    const replyAfterFailure = container.querySelector(
+      '[data-testid="document-annotation-reply-open-1"]',
+    ) as HTMLTextAreaElement | null;
+    expect(replyAfterFailure).not.toBeNull();
+    expect(replyAfterFailure!.value).toBe("Reply should stay visible");
+    expect(container.querySelector('[data-testid="document-annotation-error"]')?.textContent)
+      .toContain("Failed to add reply");
   });
 
   it("shows resolve and reopen actions and updates thread status", async () => {
