@@ -1625,6 +1625,8 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId } = useCompany();
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [moveStageKey, setMoveStageKey] = useState("");
   const [reviewDecisionNote, setReviewDecisionNote] = useState("");
 
   const pipeline = useQuery({
@@ -1772,6 +1774,34 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     () => stages.find((stage) => stage.kind === "cancelled") ?? stages.find((stage) => stage.key === "cancelled") ?? null,
     [stages],
   );
+  const moveStageOptions = useMemo(
+    () => stages
+      .filter((stage) => stage.id !== detail?.stage.id)
+      .sort((left, right) => left.position - right.position),
+    [detail?.stage.id, stages],
+  );
+  const selectedMoveStage = useMemo(
+    () => moveStageOptions.find((stage) => stage.key === moveStageKey) ?? null,
+    [moveStageKey, moveStageOptions],
+  );
+  const moveItemToStage = useMutation({
+    mutationFn: () => {
+      if (!selectedMoveStage || !detail?.case.version) throw new Error("Missing target stage");
+      return pipelinesApi.transitionCase(caseId, {
+        toStageKey: selectedMoveStage.key,
+        expectedVersion: detail.case.version,
+        reason: `Manual board override from item page: moved from ${detail.stage.name} to ${selectedMoveStage.name}.`,
+        force: true,
+      });
+    },
+    onSuccess: async () => {
+      setMoveDialogOpen(false);
+      setMoveStageKey("");
+      await invalidateItem();
+      pushToast({ title: "Item moved", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Could not move the item", tone: "error" }),
+  });
   const removeItem = useMutation({
     mutationFn: () => {
       if (!removeStage || !detail?.case.version) throw new Error("Missing removal stage");
@@ -1919,25 +1949,6 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
             </span>
             <div className="flex items-center gap-1 text-sm text-muted-foreground">
               Stage: <span className="font-medium text-foreground">{detail.stage.name}</span>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Stage actions">
-                    <MoreHorizontal className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  <DropdownMenuItem
-                    disabled={!stageAutomation || rerunCurrentStageAutomation.isPending}
-                    onSelect={(event) => {
-                      event.preventDefault();
-                      rerunCurrentStageAutomation.mutate();
-                    }}
-                  >
-                    <Loader2 className={cn("h-4 w-4", rerunCurrentStageAutomation.isPending ? "animate-spin" : "hidden")} />
-                    Re-run stage automation
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
             </div>
           </div>
           {detail.parentCase ? (
@@ -1963,6 +1974,31 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
+                  disabled={!stageAutomation || rerunCurrentStageAutomation.isPending}
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    rerunCurrentStageAutomation.mutate();
+                  }}
+                >
+                  {rerunCurrentStageAutomation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <CircleDot className="h-4 w-4" />
+                  )}
+                  Re-run stage automation
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={moveStageOptions.length === 0 || moveItemToStage.isPending}
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    setMoveStageKey(moveStageOptions[0]?.key ?? "");
+                    setMoveDialogOpen(true);
+                  }}
+                >
+                  <ArrowUpDown className="h-4 w-4" />
+                  Move to stage...
+                </DropdownMenuItem>
+                <DropdownMenuItem
                   variant="destructive"
                   disabled={!removeStage || removeItem.isPending}
                   onSelect={(event) => {
@@ -1978,6 +2014,61 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
           </div>
         </div>
       </div>
+
+      <Dialog open={moveDialogOpen} onOpenChange={setMoveDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Move to stage</DialogTitle>
+            <DialogDescription>
+              Manual moves can bypass the normal agent handoff for this item. Let automation move work when possible;
+              use this override only when the board needs to correct the item state.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="rounded-sm border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
+              <div className="flex gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <p>
+                  Moving this item may skip stage automation, review expectations, and configured transition paths.
+                  Paperclip will still enforce blockers and other hard safety checks.
+                </p>
+              </div>
+            </div>
+            <label className="block space-y-2">
+              <span className="text-sm font-medium text-foreground">Stage</span>
+              <Select value={moveStageKey} onValueChange={setMoveStageKey}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a stage" />
+                </SelectTrigger>
+                <SelectContent>
+                  {moveStageOptions.map((stage) => (
+                    <SelectItem key={stage.id} value={stage.key}>
+                      {stage.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setMoveDialogOpen(false)}
+              disabled={moveItemToStage.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => moveItemToStage.mutate()}
+              disabled={!selectedMoveStage || moveItemToStage.isPending}
+            >
+              {moveItemToStage.isPending ? "Moving..." : `Move to ${selectedMoveStage?.name ?? "stage"}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {activeWork ? (
         <ActivePipelineWorkBanner activeWork={activeWork} />

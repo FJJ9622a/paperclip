@@ -592,6 +592,8 @@ describe("PipelineItemDetailView", () => {
     const { container, root } = await renderItemPage(detail, [], { children: [], events: [] });
 
     expect(container.textContent).toContain("Stage: Content strategy");
+    expect(container.querySelector('button[aria-label="Stage actions"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Item actions"]')).not.toBeNull();
     const rerunButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Re-run stage automation"));
     expect(rerunButton).not.toBeNull();
@@ -603,6 +605,47 @@ describe("PipelineItemDetailView", () => {
 
     expect(mockPipelinesApi.rerunCurrentStageAutomation).toHaveBeenCalledWith("item-1");
     expect(mockPushToast).toHaveBeenCalledWith({ title: "Stage automation re-run started", tone: "success" });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("moves an item to another stage from the item actions menu", async () => {
+    mockPipelinesApi.transitionCase.mockResolvedValue({});
+    const detail = itemDetail({
+      stageId: "stage-intake",
+      pendingSuggestion: null,
+      version: 4,
+    });
+    const { container, root } = await renderItemPage(detail, [], { children: [], events: [] });
+
+    const moveMenuItem = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Move to stage"));
+    expect(moveMenuItem).not.toBeNull();
+
+    await act(async () => {
+      moveMenuItem!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("Manual moves can bypass the normal agent handoff");
+    const confirmButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Move to Review");
+    expect(confirmButton).not.toBeNull();
+
+    await act(async () => {
+      confirmButton!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockPipelinesApi.transitionCase).toHaveBeenCalledWith("item-1", {
+      toStageKey: "review",
+      expectedVersion: 4,
+      reason: "Manual board override from item page: moved from Intake to Review.",
+      force: true,
+    });
+    expect(mockPushToast).toHaveBeenCalledWith({ title: "Item moved", tone: "success" });
 
     act(() => {
       root.unmount();
