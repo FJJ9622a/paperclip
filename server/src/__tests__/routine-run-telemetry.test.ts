@@ -59,8 +59,8 @@ describeEmbeddedPostgres("routine run telemetry", () => {
     await db.delete(routineTriggers);
     await db.delete(routineDocuments);
     await db.delete(routines);
-    await db.delete(documentRevisions);
     await db.delete(documents);
+    await db.delete(documentRevisions);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
