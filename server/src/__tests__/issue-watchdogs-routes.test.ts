@@ -148,6 +148,10 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       goalId: overrides.goalId,
       originKind: overrides.originKind,
       originId: overrides.originId,
+      // Default to an "established" issue (created before the first-run grace
+      // window) so attaching a watchdog evaluates immediately instead of being
+      // deferred by the pending-first-run guard.
+      createdAt: overrides.createdAt ?? new Date(Date.now() - 60 * 60 * 1000),
     });
     return id;
   }

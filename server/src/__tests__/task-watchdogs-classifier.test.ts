@@ -121,6 +121,56 @@ describe("task watchdog subtree classifier", () => {
     expect(result.includedIssueIds).toEqual([sourceId]);
   });
 
+  it("defers a stopped verdict for an issue created inside the first-run grace window", () => {
+    const createdAt = new Date("2026-06-18T16:32:45.731Z");
+    const result = classify({
+      issues: [issue({ status: "todo", createdAt })],
+      // Evaluation races the issue's own assignment run ~100ms after creation.
+      evaluatedAt: new Date("2026-06-18T16:32:45.835Z"),
+      firstRunGraceMs: 15_000,
+    });
+
+    expect(result.state).toBe("pending_first_run");
+    if (result.state !== "pending_first_run") return;
+    expect(result.pendingIssueIds).toEqual([sourceId]);
+  });
+
+  it("does not defer when a recently-created issue already completed a run", () => {
+    const createdAt = new Date("2026-06-18T16:32:45.731Z");
+    const result = classify({
+      issues: [issue({ status: "blocked", createdAt })],
+      evaluatedAt: new Date("2026-06-18T16:32:48.000Z"),
+      firstRunGraceMs: 15_000,
+      completedRunIssueIds: [sourceId],
+    });
+
+    expect(result.state).toBe("stopped");
+  });
+
+  it("treats a queued assignment run inside the create-race window as live", () => {
+    const createdAt = new Date("2026-06-18T16:32:45.731Z");
+    const result = classify({
+      issues: [issue({ status: "todo", createdAt })],
+      activeRuns: [{ companyId, issueId: sourceId, agentId: "agent-1", status: "queued" }],
+      evaluatedAt: new Date("2026-06-18T16:32:45.835Z"),
+      firstRunGraceMs: 15_000,
+    });
+
+    expect(result).toMatchObject({ state: "live", liveIssueIds: [sourceId] });
+  });
+
+  it("triggers a genuinely idle assigned issue once the grace window has elapsed", () => {
+    const createdAt = new Date("2026-06-18T16:32:45.731Z");
+    const result = classify({
+      issues: [issue({ status: "todo", createdAt })],
+      // 60s later: no run, no wake, past the grace window.
+      evaluatedAt: new Date("2026-06-18T16:33:45.731Z"),
+      firstRunGraceMs: 15_000,
+    });
+
+    expect(result.state).toBe("stopped");
+  });
+
   it("does not evaluate a task-watchdog issue as a watched source", () => {
     const result = classify({
       watchdog: {

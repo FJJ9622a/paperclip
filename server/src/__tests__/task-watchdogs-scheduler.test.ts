@@ -96,6 +96,10 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       originId: overrides.originId,
       originFingerprint: overrides.originFingerprint,
       updatedAt: overrides.updatedAt,
+      // Default to an "established" issue (created well before the first-run
+      // grace window) so the pending-first-run guard does not defer it. Tests
+      // exercising the create-race pass an explicit recent `createdAt`.
+      createdAt: overrides.createdAt ?? new Date(Date.now() - 60 * 60 * 1000),
     });
     return id;
   }
@@ -217,6 +221,79 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .where(eq(issueComments.issueId, watchdogIssueId));
     expect(comments.some((comment) => comment.body.includes("Stopped fingerprint"))).toBe(true);
     expect(wakes.length).toBe(2);
+  });
+
+  it("does not raise a stopped-subtree review while a freshly-created assigned issue's first run is starting", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    // Issue + watchdog created in the same flow; the assignment run row is not
+    // yet visible to this evaluation (create-race).
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-RACE",
+      status: "todo",
+      assigneeAgentId: agentId,
+      createdAt: new Date(),
+    });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 0 });
+    expect(wakes).toHaveLength(0);
+    const watchdogIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
+    expect(watchdogIssues).toHaveLength(0);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.triggerCount).toBe(0);
+  });
+
+  it("still triggers a genuinely idle assigned issue once it is past the first-run grace window", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    // Established issue (default createdAt is an hour ago), assigned, non-terminal,
+    // with no live run or queued wake.
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-IDLE",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+  });
+
+  it("does not defer once the freshly-created issue has a terminal run on record", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-RAN",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      createdAt: new Date(),
+    });
+    await seedWatchdog(companyId, sourceId, agentId);
+    // A run for this issue already reached a terminal status, so the stop is
+    // genuine even though the issue was just created.
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "succeeded",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId: sourceId },
+    });
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
   });
 
   it("does not recursively trigger a watchdog configured on a task-watchdog issue", async () => {

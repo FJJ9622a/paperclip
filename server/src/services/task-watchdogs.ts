@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -23,6 +23,15 @@ const TASK_WATCHDOG_ORIGIN_KIND = "task_watchdog";
 const TASK_WATCHDOG_LIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const TASK_WATCHDOG_WAKE_REQUEST_STATUSES = ["queued", "deferred_issue_execution"] as const;
 const TASK_WATCHDOG_TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
+const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
+// Grace window after an issue is created/assigned during which its first
+// assignment run/wake may have been enqueued but is not yet visible to a
+// watchdog evaluation (the eval can race the issue's own assignment run).
+// Within this window a non-terminal issue that has never completed a run is
+// treated as not-yet-stopped so the evaluation does not produce a
+// false-positive stopped-subtree review. The periodic watchdog reconciler
+// re-evaluates after the window, so a genuinely idle issue still triggers.
+const TASK_WATCHDOG_FIRST_RUN_GRACE_MS = 15_000;
 
 type ActorFields = {
   agentId?: string | null;
@@ -51,7 +60,12 @@ export type TaskWatchdogClassifierIssue = Pick<
   | "assigneeUserId"
   | "originKind"
   | "updatedAt"
->;
+> & {
+  // Optional so existing callers/tests that do not care about the first-run
+  // grace window keep working; the pending-first-run guard is skipped when
+  // it (or `evaluatedAt`) is absent.
+  createdAt?: Date | string | null;
+};
 
 export type TaskWatchdogClassifierPath = {
   companyId: string;
@@ -104,6 +118,12 @@ export type TaskWatchdogClassifierResult =
     liveIssueIds: string[];
   }
   | {
+    state: "pending_first_run";
+    reason: string;
+    includedIssueIds: string[];
+    pendingIssueIds: string[];
+  }
+  | {
     state: "already_reviewed";
     reason: string;
     includedIssueIds: string[];
@@ -126,6 +146,17 @@ export type TaskWatchdogClassifierInput = {
   blockers?: TaskWatchdogClassifierRelation[];
   pendingInteractions?: TaskWatchdogClassifierWaitingPath[];
   pendingApprovals?: TaskWatchdogClassifierWaitingPath[];
+  // Timestamp the evaluation reads its snapshot at. When provided together
+  // with a positive `firstRunGraceMs`, the classifier suppresses a
+  // stopped-subtree verdict for issues created within the grace window that
+  // have never completed a run (their first assignment run/wake may not yet
+  // be visible). Omit to disable the guard (legacy behavior).
+  evaluatedAt?: Date | string | null;
+  firstRunGraceMs?: number | null;
+  // Ids of included issues that have at least one run in a terminal status.
+  // Such issues are never treated as "pending first run" — they have
+  // demonstrably executed, so a stop is genuine rather than a snapshot race.
+  completedRunIssueIds?: string[];
 };
 
 type TaskWatchdogWakeupOptions = {
@@ -189,6 +220,12 @@ function issueUpdatedAtIso(issue: Pick<TaskWatchdogClassifierIssue, "updatedAt">
   return issue.updatedAt instanceof Date
     ? issue.updatedAt.toISOString()
     : new Date(String(issue.updatedAt)).toISOString();
+}
+
+function toEpochMs(value: Date | string | null | undefined): number | null {
+  if (value == null) return null;
+  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
 }
 
 function pathIssueIds(paths: TaskWatchdogClassifierPath[] | undefined, companyId: string) {
@@ -276,6 +313,36 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       includedIssueIds: includedIds,
       liveIssueIds: uniqueLiveIssueIds,
     };
+  }
+
+  // Pending-first-run guard: a watchdog evaluation triggered as part of issue
+  // (or watchdog) creation can read its snapshot before the issue's own
+  // assignment run/wake is committed/visible, making an actively-starting
+  // subtree look idle. Suppress the stopped verdict for non-terminal issues
+  // created within the first-run grace window that have never completed a run.
+  const evaluatedAtMs = toEpochMs(input.evaluatedAt);
+  const graceMs = input.firstRunGraceMs ?? 0;
+  if (evaluatedAtMs != null && graceMs > 0) {
+    const completedRunIssueIds = new Set(input.completedRunIssueIds ?? []);
+    const pendingIssueIds = included
+      .filter((issue) => {
+        if (isTerminalIssueStatus(issue.status)) return false;
+        if (completedRunIssueIds.has(issue.id)) return false;
+        const createdAtMs = toEpochMs(issue.createdAt);
+        if (createdAtMs == null) return false;
+        return evaluatedAtMs - createdAtMs < graceMs;
+      })
+      .map((issue) => issue.id)
+      .sort();
+    if (pendingIssueIds.length > 0) {
+      return {
+        state: "pending_first_run",
+        reason:
+          "A watched issue was created within the first-run grace window and has not yet completed a run; deferring evaluation until its first assignment run/wake is observable.",
+        includedIssueIds: includedIds,
+        pendingIssueIds,
+      };
+    }
   }
 
   const includedChildrenByParentId = new Map<string, string[]>();
@@ -564,6 +631,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           assigneeUserId: issues.assigneeUserId,
           originKind: issues.originKind,
           updatedAt: issues.updatedAt,
+          createdAt: issues.createdAt,
         })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt))),
@@ -637,6 +705,20 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         )),
     ]);
 
+    const evaluatedAt = new Date();
+    const evaluatedAtMs = evaluatedAt.getTime();
+    // Only the issues created within the first-run grace window can be racing
+    // their own assignment run; scope the (potentially expensive) terminal-run
+    // lookup to those few issues so the common path stays a no-op.
+    const freshIssueIds = issueRows
+      .filter((row) => {
+        if (isTerminalIssueStatus(row.status)) return false;
+        const createdAtMs = toEpochMs(row.createdAt);
+        return createdAtMs != null && evaluatedAtMs - createdAtMs < TASK_WATCHDOG_FIRST_RUN_GRACE_MS;
+      })
+      .map((row) => row.id);
+    const completedRunIssueIds = await collectCompletedRunIssueIds(companyId, freshIssueIds);
+
     return {
       watchdog: summarizeIssueWatchdog(watchdog),
       issues: issueRows,
@@ -655,7 +737,49 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       blockers: blockerRows,
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
+      evaluatedAt,
+      firstRunGraceMs: TASK_WATCHDOG_FIRST_RUN_GRACE_MS,
+      completedRunIssueIds,
     } satisfies TaskWatchdogClassifierInput;
+  }
+
+  // Returns the subset of `issueIds` that already have at least one run in a
+  // terminal status. Such issues have demonstrably executed, so a stopped
+  // subtree is genuine and must not be masked by the pending-first-run guard.
+  async function collectCompletedRunIssueIds(companyId: string, issueIds: string[]) {
+    if (issueIds.length === 0) return [];
+    const candidates = new Set(issueIds);
+    const [contextRuns, executionRuns] = await Promise.all([
+      db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, [...TASK_WATCHDOG_TERMINAL_RUN_STATUSES]),
+          or(
+            inArray(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`, issueIds),
+            inArray(sql`${heartbeatRuns.contextSnapshot}->>'taskId'`, issueIds),
+          ),
+        )),
+      db
+        .select({ issueId: issues.id })
+        .from(issues)
+        .innerJoin(heartbeatRuns, eq(issues.executionRunId, heartbeatRuns.id))
+        .where(and(
+          eq(issues.companyId, companyId),
+          inArray(issues.id, issueIds),
+          inArray(heartbeatRuns.status, [...TASK_WATCHDOG_TERMINAL_RUN_STATUSES]),
+        )),
+    ]);
+    const completed = new Set<string>();
+    for (const row of contextRuns) {
+      const issueId = issueIdFromRunContext(row.contextSnapshot);
+      if (issueId && candidates.has(issueId)) completed.add(issueId);
+    }
+    for (const row of executionRuns) {
+      completed.add(row.issueId);
+    }
+    return [...completed];
   }
 
   async function findTaskWatchdogIssue(companyId: string, watchedIssueId: string) {
