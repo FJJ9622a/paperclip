@@ -173,6 +173,28 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes).toHaveLength(1);
     expect(wakes[0]?.agentId).toBe(agentId);
     expect(wakes[0]?.opts?.reason).toBe("task_watchdog_stopped_subtree");
+    expect(wakes[0]?.opts?.contextSnapshot).toMatchObject({
+      taskWatchdog: {
+        watchedIssueId: sourceId,
+        watchedIssueIdentifier: "WDOG-1",
+        capabilities: {
+          targetScope: {
+            watchedIssueId: sourceId,
+            includeNonWatchdogDescendants: true,
+            excludedOriginKinds: ["task_watchdog"],
+          },
+          operations: expect.arrayContaining([
+            "comment_on_watched_subtree_issues",
+            "create_child_issues_under_non_watchdog_watched_subtree",
+            "update_reusable_watchdog_issue",
+          ]),
+          deniedOperations: expect.arrayContaining([
+            "create_visible_probe_issues_or_throwaway_tasks",
+            "mutate_task_watchdog_descendants",
+          ]),
+        },
+      },
+    });
 
     const watchdogIssues = await db
       .select()

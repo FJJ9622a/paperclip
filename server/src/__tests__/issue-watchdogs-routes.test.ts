@@ -25,6 +25,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
+import { taskWatchdogService } from "../services/task-watchdogs.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -169,6 +170,11 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       watchdogIssueId: input.watchdogIssueId,
       status: "active",
     });
+    await taskWatchdogService(db).reconcileTaskWatchdogs({ companyId: input.companyId });
+    const [watchdog] = await db
+      .select({ lastObservedFingerprint: issueWatchdogs.lastObservedFingerprint })
+      .from(issueWatchdogs)
+      .where(and(eq(issueWatchdogs.companyId, input.companyId), eq(issueWatchdogs.issueId, input.watchedIssueId)));
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -181,6 +187,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
           watchedIssueId: input.watchedIssueId,
           watchedIssueIdentifier: "WDOG-ROOT",
           watchedIssueTitle: "Watched root",
+          stopFingerprint: watchdog?.lastObservedFingerprint,
         },
       },
     });
@@ -367,7 +374,14 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     const unrelatedRootId = await seedIssue(companyId, { title: "Unrelated root" });
     const watchdogIssueId = await seedIssue(companyId, {
       title: "Reusable watchdog issue",
+      parentId: watchedRootId,
       assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const watchdogIssueChildId = await seedIssue(companyId, {
+      title: "Watchdog issue child",
+      parentId: watchdogIssueId,
     });
     const runId = await seedWatchdogRun({
       companyId,
@@ -383,28 +397,24 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       source: "agent_jwt",
     });
 
-    const allowedPatch = await request(app)
-      .patch(`/api/issues/${watchedChildId}`)
-      .send({ title: "Watched child verified" });
-    expect(allowedPatch.status, JSON.stringify(allowedPatch.body)).toBe(200);
-    expect(allowedPatch.body.title).toBe("Watched child verified");
-
     const watchdogIssuePatch = await request(app)
       .patch(`/api/issues/${watchdogIssueId}`)
       .send({ title: "Reusable watchdog issue completed" });
     expect(watchdogIssuePatch.status, JSON.stringify(watchdogIssuePatch.body)).toBe(200);
+
+    const deniedWatchdogDescendantPatch = await request(app)
+      .patch(`/api/issues/${watchdogIssueChildId}`)
+      .send({ title: "Denied watchdog descendant mutation" });
+    expect(deniedWatchdogDescendantPatch.status, JSON.stringify(deniedWatchdogDescendantPatch.body)).toBe(403);
+    expect(deniedWatchdogDescendantPatch.body.error).toBe(
+      "Task-watchdog runs can only mutate the watched issue subtree.",
+    );
 
     const deniedPatch = await request(app)
       .patch(`/api/issues/${unrelatedRootId}`)
       .send({ title: "Out-of-scope mutation" });
     expect(deniedPatch.status, JSON.stringify(deniedPatch.body)).toBe(403);
     expect(deniedPatch.body.error).toBe("Task-watchdog runs can only mutate the watched issue subtree.");
-
-    const allowedChild = await request(app)
-      .post(`/api/issues/${watchedRootId}/children`)
-      .send({ title: "Allowed watched child" });
-    expect(allowedChild.status, JSON.stringify(allowedChild.body)).toBe(201);
-    expect(allowedChild.body.parentId).toBe(watchedRootId);
 
     const deniedChild = await request(app)
       .post(`/api/issues/${unrelatedRootId}/children`)
@@ -416,18 +426,23 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       .post(`/api/issues/${watchdogIssueId}/children`)
       .send({ title: "Denied watchdog issue child" });
     expect(deniedWatchdogIssueChild.status, JSON.stringify(deniedWatchdogIssueChild.body)).toBe(403);
-
-    const allowedParentCreate = await request(app)
-      .post(`/api/companies/${companyId}/issues`)
-      .send({ title: "Allowed parent create", parentId: watchedChildId });
-    expect(allowedParentCreate.status, JSON.stringify(allowedParentCreate.body)).toBe(201);
-    expect(allowedParentCreate.body.parentId).toBe(watchedChildId);
+    const deniedVisibleProbeIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.title, "Denied watchdog issue child")));
+    expect(deniedVisibleProbeIssues).toHaveLength(0);
 
     const deniedParentCreate = await request(app)
       .post(`/api/companies/${companyId}/issues`)
       .send({ title: "Denied parent create", parentId: unrelatedRootId });
     expect(deniedParentCreate.status, JSON.stringify(deniedParentCreate.body)).toBe(403);
     expect(deniedParentCreate.body.error).toBe("Task-watchdog runs can only mutate the watched issue subtree.");
+
+    const allowedChild = await request(app)
+      .post(`/api/issues/${watchedChildId}/children`)
+      .send({ title: "Allowed watched child" });
+    expect(allowedChild.status, JSON.stringify(allowedChild.body)).toBe(201);
+    expect(allowedChild.body.parentId).toBe(watchedChildId);
   });
 
   it("rejects watchdog interaction-resolution attempts outside the persisted watched subtree", async () => {

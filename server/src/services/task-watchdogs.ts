@@ -553,7 +553,32 @@ function watchdogWakeContext(input: {
     taskWatchdog: {
       watchedIssueId: input.sourceIssue.id,
       watchedIssueIdentifier: input.sourceIssue.identifier,
+      watchedIssueTitle: input.sourceIssue.title,
       stopFingerprint: input.classification.stopFingerprint,
+      capabilities: {
+        targetScope: {
+          watchedIssueId: input.sourceIssue.id,
+          watchedIssueIdentifier: input.sourceIssue.identifier,
+          watchdogIssueId: input.watchdogIssue.id,
+          includeNonWatchdogDescendants: true,
+          excludedOriginKinds: [TASK_WATCHDOG_ORIGIN_KIND],
+        },
+        operations: [
+          "comment_on_watched_subtree_issues",
+          "transition_watched_subtree_issue_status",
+          "reassign_watched_subtree_issues",
+          "create_child_issues_under_non_watchdog_watched_subtree",
+          "resolve_eligible_request_confirmation_plan_interactions",
+          "update_reusable_watchdog_issue",
+        ],
+        deniedOperations: [
+          "create_visible_probe_issues_or_throwaway_tasks",
+          "mutate_task_watchdog_descendants",
+          "mutate_outside_watched_subtree",
+          "resolve_board_only_or_security_sensitive_approvals",
+          "create_nested_task_watchdogs",
+        ],
+      },
     },
     watchdogId: input.watchdog.id,
     watchedIssueId: input.sourceIssue.id,

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issues, issueWatchdogs } from "@paperclipai/db";
 
 const MAX_WATCHDOG_SCOPE_ANCESTRY_DEPTH = 100;
+const TASK_WATCHDOG_ORIGIN_KIND = "task_watchdog";
 
 type AgentRunActor = {
   type: string;
@@ -130,16 +131,17 @@ export async function issueIsInTaskWatchdogSubtree(
   const seen = new Set<string>();
 
   for (let depth = 0; currentId && depth < MAX_WATCHDOG_SCOPE_ANCESTRY_DEPTH; depth += 1) {
-    if (currentId === watchedIssueId) return true;
     if (seen.has(currentId)) return false;
     seen.add(currentId);
 
-    const parent: { id: string; companyId: string; parentId: string | null } | null = await db
-      .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId })
+    const parent: { id: string; companyId: string; parentId: string | null; originKind: string | null } | null = await db
+      .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId, originKind: issues.originKind })
       .from(issues)
       .where(and(eq(issues.id, currentId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
     if (!parent) return false;
+    if (parent.originKind === TASK_WATCHDOG_ORIGIN_KIND) return false;
+    if (currentId === watchedIssueId) return true;
     currentId = parent.parentId ?? null;
   }
 

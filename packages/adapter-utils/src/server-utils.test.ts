@@ -1002,6 +1002,20 @@ describe("renderPaperclipWakePrompt - task watchdog", () => {
         watchedIssueIdentifier: "PAP-8000",
         watchedIssueTitle: "Ship onboarding flow",
         stopFingerprint: "stop:sha256:abc123",
+        capabilities: {
+          targetScope: {
+            watchedIssueId: "watched-issue-1",
+            watchedIssueIdentifier: "PAP-8000",
+            watchdogIssueId: "watchdog-issue-1",
+            includeNonWatchdogDescendants: true,
+            excludedOriginKinds: ["task_watchdog"],
+          },
+          operations: [
+            "comment_on_watched_subtree_issues",
+            "create_child_issues_under_non_watchdog_watched_subtree",
+          ],
+          deniedOperations: ["create_visible_probe_issues_or_throwaway_tasks"],
+        },
         terminalLeafSummaries: [
           {
             id: "leaf-1",
@@ -1030,6 +1044,15 @@ describe("renderPaperclipWakePrompt - task watchdog", () => {
     expect(prompt).toContain("Watched issue: PAP-8000 Ship onboarding flow");
     expect(prompt).toContain("Stop fingerprint: stop:sha256:abc123");
     expect(prompt).toContain("Your mission is to keep the watched issue tree moving by verifying stopped work");
+    expect(prompt).toContain("Server-derived watchdog capability metadata:");
+    expect(prompt).toContain("Target scope: PAP-8000 plus non-watchdog descendants.");
+    expect(prompt).toContain("Reusable watchdog issue: watchdog-issue-1.");
+    expect(prompt).toContain("Excluded origin kinds: task_watchdog.");
+    expect(prompt).toContain(
+      "Allowed operations: comment_on_watched_subtree_issues, create_child_issues_under_non_watchdog_watched_subtree.",
+    );
+    expect(prompt).toContain("Denied operations: create_visible_probe_issues_or_throwaway_tasks.");
+    expect(prompt).toContain("Do not create visible probe issues");
     expect(prompt).toContain("Terminal / stopped leaves to verify:");
     expect(prompt).toContain("- PAP-8004 QA screenshots (done) [qa]");
     expect(prompt).toContain("  QA marked done without attaching the required screenshot.");
@@ -1134,6 +1157,17 @@ describe("renderPaperclipWakePrompt - task watchdog", () => {
         watchedIssueIdentifier: "PAP-8000",
         watchedIssueTitle: "Ship onboarding flow",
         stopFingerprint: "stop:abc",
+        capabilities: {
+          targetScope: {
+            watchedIssueId: "watched-issue-1",
+            watchedIssueIdentifier: "PAP-8000",
+            watchdogIssueId: "watchdog-issue-1",
+            includeNonWatchdogDescendants: true,
+            excludedOriginKinds: ["task_watchdog"],
+          },
+          operations: ["update_reusable_watchdog_issue"],
+          deniedOperations: ["mutate_task_watchdog_descendants"],
+        },
         terminalLeafSummaries: [
           {
             id: "leaf-1",
@@ -1155,6 +1189,14 @@ describe("renderPaperclipWakePrompt - task watchdog", () => {
       watchedIssueIdentifier: "PAP-8000",
       stopFingerprint: "stop:abc",
       customInstructions: "Be skeptical of QA done-claims.",
+      capabilities: {
+        operations: ["update_reusable_watchdog_issue"],
+        deniedOperations: ["mutate_task_watchdog_descendants"],
+        targetScope: {
+          watchdogIssueId: "watchdog-issue-1",
+          excludedOriginKinds: ["task_watchdog"],
+        },
+      },
       terminalLeafSummaries: [
         expect.objectContaining({ identifier: "PAP-8004", role: "qa" }),
       ],

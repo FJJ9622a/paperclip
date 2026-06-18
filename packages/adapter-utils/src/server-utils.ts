@@ -142,6 +142,7 @@ export const WATCHDOG_DEFAULT_MANDATE = [
   "",
   "Safety constraints (these always apply, even if custom instructions disagree):",
   "- Stay inside the watched subtree. Do not mutate issues outside the watched issue and its non-watchdog descendants.",
+  "- Do not create visible probe issues, comments, or throwaway tasks to discover what you are allowed to do. Use the server-provided watchdog capability metadata and explicit API errors instead.",
   "- Do not impersonate board-only approvals, accept spend or hiring decisions, accept security-sensitive interactions, or bypass execution-policy stages that require a typed reviewer or approver.",
   "- Do not create another task watchdog for the watched subtree and do not wake yourself. You operate exactly one reusable watchdog issue per watched issue.",
   "- Do not cross company boundaries or touch tasks in unrelated trees.",
@@ -163,6 +164,18 @@ type PaperclipWakeTaskWatchdogLeaf = {
   summary: string | null;
 };
 
+type PaperclipWakeTaskWatchdogCapabilities = {
+  operations: string[];
+  deniedOperations: string[];
+  targetScope: {
+    watchedIssueId: string | null;
+    watchedIssueIdentifier: string | null;
+    watchdogIssueId: string | null;
+    includeNonWatchdogDescendants: boolean;
+    excludedOriginKinds: string[];
+  } | null;
+};
+
 export type PaperclipWakeTaskWatchdogContext = {
   watchedIssueId: string | null;
   watchedIssueIdentifier: string | null;
@@ -170,6 +183,7 @@ export type PaperclipWakeTaskWatchdogContext = {
   stopFingerprint: string | null;
   terminalLeafSummaries: PaperclipWakeTaskWatchdogLeaf[];
   customInstructions: string | null;
+  capabilities: PaperclipWakeTaskWatchdogCapabilities | null;
 };
 
 export interface PaperclipSkillEntry {
@@ -607,6 +621,7 @@ function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWake
 
 const MAX_WATCHDOG_INSTRUCTIONS_CHARS = 4_000;
 const MAX_WATCHDOG_LEAF_SUMMARIES = 25;
+const MAX_WATCHDOG_CAPABILITY_ITEMS = 50;
 
 function normalizePaperclipWakeTaskWatchdogLeaf(value: unknown): PaperclipWakeTaskWatchdogLeaf | null {
   const leaf = parseObject(value);
@@ -619,6 +634,41 @@ function normalizePaperclipWakeTaskWatchdogLeaf(value: unknown): PaperclipWakeTa
   const summary = asString(leaf.summary, "").trim() || null;
   if (!id && !identifier && !title && !status && !summary) return null;
   return { id, identifier, title, status, priority, role, summary };
+}
+
+function normalizeStringList(value: unknown, maxItems: number) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    .map((entry) => entry.trim())
+    .slice(0, maxItems);
+}
+
+function normalizePaperclipWakeTaskWatchdogCapabilities(value: unknown): PaperclipWakeTaskWatchdogCapabilities | null {
+  const capabilities = parseObject(value);
+  const operations = normalizeStringList(capabilities.operations, MAX_WATCHDOG_CAPABILITY_ITEMS);
+  const deniedOperations = normalizeStringList(capabilities.deniedOperations, MAX_WATCHDOG_CAPABILITY_ITEMS);
+  const targetScopeRaw = parseObject(capabilities.targetScope);
+  const targetScope = {
+    watchedIssueId: asString(targetScopeRaw.watchedIssueId, "").trim() || null,
+    watchedIssueIdentifier: asString(targetScopeRaw.watchedIssueIdentifier, "").trim() || null,
+    watchdogIssueId: asString(targetScopeRaw.watchdogIssueId, "").trim() || null,
+    includeNonWatchdogDescendants: asBoolean(targetScopeRaw.includeNonWatchdogDescendants, false),
+    excludedOriginKinds: normalizeStringList(targetScopeRaw.excludedOriginKinds, MAX_WATCHDOG_CAPABILITY_ITEMS),
+  };
+  const hasTargetScope = Boolean(
+    targetScope.watchedIssueId ||
+      targetScope.watchedIssueIdentifier ||
+      targetScope.watchdogIssueId ||
+      targetScope.includeNonWatchdogDescendants ||
+      targetScope.excludedOriginKinds.length > 0,
+  );
+  if (operations.length === 0 && deniedOperations.length === 0 && !hasTargetScope) return null;
+  return {
+    operations,
+    deniedOperations,
+    targetScope: hasTargetScope ? targetScope : null,
+  };
 }
 
 function normalizePaperclipWakeTaskWatchdog(value: unknown): PaperclipWakeTaskWatchdogContext | null {
@@ -640,6 +690,7 @@ function normalizePaperclipWakeTaskWatchdog(value: unknown): PaperclipWakeTaskWa
         .map((entry) => normalizePaperclipWakeTaskWatchdogLeaf(entry))
         .filter((entry): entry is PaperclipWakeTaskWatchdogLeaf => Boolean(entry))
     : [];
+  const capabilities = normalizePaperclipWakeTaskWatchdogCapabilities(watchdog.capabilities);
 
   if (
     !watchedIssueId &&
@@ -647,7 +698,8 @@ function normalizePaperclipWakeTaskWatchdog(value: unknown): PaperclipWakeTaskWa
     !watchedIssueTitle &&
     !stopFingerprint &&
     !customInstructions &&
-    terminalLeafSummaries.length === 0
+    terminalLeafSummaries.length === 0 &&
+    !capabilities
   ) {
     return null;
   }
@@ -659,6 +711,7 @@ function normalizePaperclipWakeTaskWatchdog(value: unknown): PaperclipWakeTaskWa
     stopFingerprint,
     terminalLeafSummaries,
     customInstructions,
+    capabilities,
   };
 }
 
@@ -934,6 +987,27 @@ export function renderPaperclipWakePrompt(
       lines.push(`Stop fingerprint: ${watchdog.stopFingerprint}`);
     }
     lines.push("", WATCHDOG_DEFAULT_MANDATE);
+    if (watchdog.capabilities) {
+      lines.push("", "Server-derived watchdog capability metadata:");
+      if (watchdog.capabilities.targetScope) {
+        const scope = watchdog.capabilities.targetScope;
+        lines.push(
+          `- Target scope: ${scope.watchedIssueIdentifier ?? scope.watchedIssueId ?? "unknown"} plus ${scope.includeNonWatchdogDescendants ? "non-watchdog descendants" : "no descendants"}.`,
+        );
+        if (scope.watchdogIssueId) {
+          lines.push(`- Reusable watchdog issue: ${scope.watchdogIssueId}.`);
+        }
+        if (scope.excludedOriginKinds.length > 0) {
+          lines.push(`- Excluded origin kinds: ${scope.excludedOriginKinds.join(", ")}.`);
+        }
+      }
+      if (watchdog.capabilities.operations.length > 0) {
+        lines.push(`- Allowed operations: ${watchdog.capabilities.operations.join(", ")}.`);
+      }
+      if (watchdog.capabilities.deniedOperations.length > 0) {
+        lines.push(`- Denied operations: ${watchdog.capabilities.deniedOperations.join(", ")}.`);
+      }
+    }
     if (watchdog.terminalLeafSummaries.length > 0) {
       lines.push("", "Terminal / stopped leaves to verify:");
       for (const leaf of watchdog.terminalLeafSummaries) {
