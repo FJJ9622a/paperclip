@@ -194,6 +194,8 @@ export type RuntimeSecretManifestEntry = {
   version: number;
   provider: SecretProvider;
   outcome: "success" | "failure";
+  usageLabel?: string | null;
+  providerConfigHealth?: Omit<SecretProviderConfigHealthResponse, "checkedAt"> | null;
   errorCode?: string | null;
 };
 
@@ -563,6 +565,81 @@ export function secretService(db: Db) {
     };
   }
 
+  function buildProviderConfigHealthSummary(input: {
+    configId: string;
+    provider: SecretProvider;
+    status: SecretProviderConfigStatus;
+    config: Record<string, unknown>;
+    healthStatus: SecretProviderConfigHealthResponse["status"] | null;
+    healthMessage: string | null;
+    healthDetails: Record<string, unknown> | null;
+  }): Omit<SecretProviderConfigHealthResponse, "checkedAt"> | null {
+    const providerConfigHealthDetails = asRecord(input.healthDetails);
+    const staticHealth = input.healthStatus
+      ? {
+          configId: input.configId,
+          provider: input.provider,
+          status: input.healthStatus,
+          message: input.healthMessage?.trim() || "Provider vault health status is recorded on the provider config.",
+          details: {
+            code: input.healthStatus === "ready" ? "provider_ready" : input.healthStatus === "warning"
+              ? "provider_needs_attention"
+              : "provider_error",
+            message: input.healthMessage?.trim() || "Provider vault health status is recorded on the provider config.",
+            ...(asRecord(input.healthDetails) ?? {}),
+          },
+        }
+      : null;
+
+    if (staticHealth) {
+      if (staticHealth.status !== "ready") return staticHealth;
+      if (input.status === "warning") {
+        return {
+          ...staticHealth,
+          status: "warning",
+          message: staticHealth.message || "Provider vault status is warning.",
+          details: {
+            ...staticHealth.details,
+            code: "provider_needs_attention",
+            message: staticHealth.message || "Provider vault status is warning.",
+            ...(providerConfigHealthDetails ? providerConfigHealthDetails : {}),
+          },
+        };
+      }
+      return null;
+    }
+
+    if (input.status === "disabled" || input.status === "coming_soon") {
+      return providerConfigHealth({
+        id: input.configId,
+        provider: input.provider,
+        providerStatus: input.status,
+        health: {
+          status: "ok",
+          message: "Provider vault status is warning.",
+          warnings: [],
+          backupGuidance: [],
+        },
+      });
+    }
+
+    if (input.status === "warning") {
+      return {
+        configId: input.configId,
+        provider: input.provider,
+        status: "warning",
+        message: "Provider vault status is warning.",
+        details: {
+          code: "provider_needs_attention",
+          message: "Provider vault status is warning.",
+          ...(providerConfigHealthDetails ?? {}),
+        },
+      };
+    }
+
+    return null;
+  }
+
   async function resolveSecretValueInternal(
     companyId: string,
     secretId: string,
@@ -594,6 +671,21 @@ export function secretService(db: Db) {
         provider: providerId,
         providerConfigId: secret.providerConfigId,
       });
+      const providerConfigHealth = secret.providerConfigId
+        ? await (async () => {
+          const row = await getProviderConfigById(secret.providerConfigId!);
+          if (!row || row.companyId !== companyId || row.provider !== providerId) return null;
+          return buildProviderConfigHealthSummary({
+            configId: row.id,
+            provider: providerId,
+            status: (row.status as SecretProviderConfigStatus) ?? defaultProviderConfigStatus(providerId),
+            config: asRecord(row.config) ?? {},
+            healthStatus: (row.healthStatus as SecretProviderConfigHealthResponse["status"] | null) ?? null,
+            healthMessage: row.healthMessage,
+            healthDetails: asRecord(row.healthDetails),
+          });
+        })()
+        : null;
       const value = await provider.resolveVersion({
         material: versionRow.material as Record<string, unknown>,
         externalRef: secret.externalRef,
@@ -631,6 +723,8 @@ export function secretService(db: Db) {
           secretKey: secret.key,
           version: resolvedVersion,
           provider: providerId,
+          usageLabel: binding?.label ?? null,
+          providerConfigHealth,
           outcome: "success",
         },
       };
