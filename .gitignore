@@ -32,6 +32,7 @@ packages/db/seed-*.mjs
 cli/package.dev.json
 
 # Build artifacts in src directories
+server/src/build-info.generated.ts
 server/src/**/*.js
 server/src/**/*.js.map
 server/src/**/*.d.ts
