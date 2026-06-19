@@ -6,6 +6,7 @@ import {
   syncDirectoryToSsh,
 } from "./ssh.js";
 import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
+import type { RuntimeProgressSink } from "./runtime-progress.js";
 
 export interface RemoteManagedRuntimeAsset {
   key: string;
@@ -20,7 +21,7 @@ export interface PreparedRemoteManagedRuntime {
   workspaceRemoteDir: string;
   runtimeRootDir: string;
   assetDirs: Record<string, string>;
-  restoreWorkspace(): Promise<void>;
+  restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -69,6 +70,9 @@ export async function prepareRemoteManagedRuntime(input: {
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
   assets?: RemoteManagedRuntimeAsset[];
+  // Upload progress sink. Threaded for the byte-counting transport rewrite; the
+  // child task wires it into the workspace/asset transfers.
+  onProgress?: RuntimeProgressSink;
 }): Promise<PreparedRemoteManagedRuntime> {
   const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const workspaceRemoteDir = path.posix.join(
@@ -120,7 +124,7 @@ export async function prepareRemoteManagedRuntime(input: {
     workspaceRemoteDir,
     runtimeRootDir,
     assetDirs,
-    restoreWorkspace: async () => {
+    restoreWorkspace: async (_onProgress?: RuntimeProgressSink) => {
       await restoreWorkspaceFromSshExecution({
         spec: input.spec,
         localDir: input.workspaceLocalDir,

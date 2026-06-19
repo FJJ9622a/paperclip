@@ -8,6 +8,7 @@ import {
 } from "./sandbox-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
+import type { RuntimeProgressSink } from "./runtime-progress.js";
 
 export interface CommandManagedRuntimeRunner {
   execute(input: {
@@ -146,6 +147,9 @@ export async function prepareCommandManagedRuntime(input: {
   installCommand?: string | null;
   /** When provided alongside `installCommand`, skip the install if `command -v <detectCommand>` succeeds. */
   detectCommand?: string | null;
+  // Upload progress sink. Forwarded to prepareSandboxManagedRuntime; the child
+  // task wires it into the byte-counting writeFile/readFile transport.
+  onProgress?: RuntimeProgressSink;
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
@@ -193,6 +197,7 @@ export async function prepareCommandManagedRuntime(input: {
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
+          onProgress: input.onProgress,
         });
       }
     }
@@ -227,5 +232,6 @@ export async function prepareCommandManagedRuntime(input: {
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
+    onProgress: input.onProgress,
   });
 }
