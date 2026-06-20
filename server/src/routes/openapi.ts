@@ -753,11 +753,28 @@ registry.registerPath({
     200: r.ok(z.object({
       status: z.enum(["ok", "unhealthy"]),
       version: z.string().optional(),
+      commitSha: z.string().optional(),
+      builtAt: z.string().optional(),
       deploymentMode: z.string().optional(),
+      deploymentExposure: z.string().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
     })),
-    503: { description: "Service unavailable", content: { "application/json": { schema: ErrorSchema } } },
+    503: {
+      description: "Service unavailable",
+      content: {
+        "application/json": {
+          schema: z.object({
+            status: z.literal("unhealthy"),
+            version: z.string().optional(),
+            commitSha: z.string().optional(),
+            builtAt: z.string().optional(),
+            deploymentMode: z.string().optional(),
+            error: z.literal("database_unreachable"),
+          }),
+        },
+      },
+    },
   },
 });
 
