@@ -237,6 +237,237 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     expect(adapterExecute).toHaveBeenCalledTimes(1);
   }, 15_000);
 
+  it("inherits the instance default environment across companies while preserving explicit agent overrides", async () => {
+    const sharedEnvironmentId = randomUUID();
+    const overrideEnvironmentId = randomUUID();
+    const pluginId = randomUUID();
+    const pluginKey = `acme.environments.${pluginId}`;
+    const companyAId = randomUUID();
+    const companyBId = randomUUID();
+    const projectAId = randomUUID();
+    const projectBId = randomUUID();
+    const workspaceAId = randomUUID();
+    const workspaceBId = randomUUID();
+    const agentAId = randomUUID();
+    const agentBId = randomUUID();
+    const workspaceRootA = await mkdtemp(path.join(os.tmpdir(), "paperclip-plugin-env-company-a-"));
+    const workspaceRootB = await mkdtemp(path.join(os.tmpdir(), "paperclip-plugin-env-company-b-"));
+    tempRoots.push(workspaceRootA, workspaceRootB);
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, payload: Record<string, unknown>) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: `plugin-heartbeat-lease-${String(payload.environmentId)}`,
+            metadata: {
+              remoteCwd: `/workspace/${String(payload.environmentId)}`,
+            },
+          };
+        }
+        if (method === "environmentReleaseLease") {
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin environment method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey,
+      packageName: "@acme/paperclip-environments",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: pluginKey,
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Acme Environments",
+        description: "Test plugin environment driver",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "sandbox",
+            displayName: "Sandbox",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    await db.insert(environments).values([
+      {
+        id: sharedEnvironmentId,
+        name: "Shared Plugin Sandbox",
+        driver: "plugin",
+        status: "active",
+        config: {
+          pluginKey,
+          driverKey: "sandbox",
+          driverConfig: {
+            template: "shared",
+          },
+        },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: overrideEnvironmentId,
+        name: "Override Plugin Sandbox",
+        driver: "plugin",
+        status: "active",
+        config: {
+          pluginKey,
+          driverKey: "sandbox",
+          driverConfig: {
+            template: "override",
+          },
+        },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    await instanceSettingsService(db).update({ defaultEnvironmentId: sharedEnvironmentId });
+
+    await db.insert(companies).values([
+      {
+        id: companyAId,
+        name: "Acme A",
+        issuePrefix: `T${companyAId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        status: "active",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: companyBId,
+        name: "Acme B",
+        issuePrefix: `T${companyBId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        status: "active",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    await db.insert(projects).values([
+      {
+        id: projectAId,
+        companyId: companyAId,
+        name: "Company A Project",
+        status: "active",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: projectBId,
+        companyId: companyBId,
+        name: "Company B Project",
+        status: "active",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    await db.insert(projectWorkspaces).values([
+      {
+        id: workspaceAId,
+        companyId: companyAId,
+        projectId: projectAId,
+        name: "Primary",
+        cwd: workspaceRootA,
+        isPrimary: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: workspaceBId,
+        companyId: companyBId,
+        projectId: projectBId,
+        name: "Primary",
+        cwd: workspaceRootB,
+        isPrimary: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    await db.insert(agents).values([
+      {
+        id: agentAId,
+        companyId: companyAId,
+        name: "SharedEnvAgent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        defaultEnvironmentId: null,
+        permissions: {},
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: agentBId,
+        companyId: companyBId,
+        name: "OverrideEnvAgent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        defaultEnvironmentId: overrideEnvironmentId,
+        permissions: {},
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
+    const sharedRun = await heartbeat.wakeup(agentAId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      contextSnapshot: { projectId: projectAId },
+    });
+    const overrideRun = await heartbeat.wakeup(agentBId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      contextSnapshot: { projectId: projectBId },
+    });
+
+    expect(sharedRun).not.toBeNull();
+    expect(overrideRun).not.toBeNull();
+    await vi.waitFor(async () => {
+      const [latestShared, latestOverride] = await Promise.all([
+        heartbeat.getRun(sharedRun!.id),
+        heartbeat.getRun(overrideRun!.id),
+      ]);
+      expect(latestShared?.status).toBe("succeeded");
+      expect(latestOverride?.status).toBe("succeeded");
+    }, { timeout: 5_000 });
+
+    const acquireCalls = workerManager.call.mock.calls
+      .filter(([, method]) => method === "environmentAcquireLease");
+
+    expect(acquireCalls).toHaveLength(2);
+    expect(acquireCalls[0]?.[2]).toMatchObject({
+      companyId: companyAId,
+      environmentId: sharedEnvironmentId,
+      config: { template: "shared" },
+      agentId: agentAId,
+      runId: sharedRun!.id,
+      adapterType: "codex_local",
+    });
+    expect(acquireCalls[1]?.[2]).toMatchObject({
+      companyId: companyBId,
+      environmentId: overrideEnvironmentId,
+      config: { template: "override" },
+      agentId: agentBId,
+      runId: overrideRun!.id,
+      adapterType: "codex_local",
+    });
+  }, 15_000);
+
   it("ignores stale non-reused workspace environment config in favor of the assignee selection", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
