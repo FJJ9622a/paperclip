@@ -103,6 +103,38 @@ describe("GET /health", () => {
     });
   });
 
+  it("redacts build metadata on authenticated anonymous database failures", async () => {
+    process.env.BUILD_SHA = "0123456789abcdef0123456789abcdef01234567";
+    process.env.BUILD_BRANCH = "test-build-metadata";
+    process.env.BUILD_TIMESTAMP = "2026-06-20T00:00:00Z";
+    const db = {
+      execute: vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED")),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({
+      status: "unhealthy",
+      version: serverVersion,
+      error: "database_unreachable",
+    });
+  });
+
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
     vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);

@@ -104,7 +104,7 @@ export function healthRoutes(
       res.status(503).json({
         status: "unhealthy",
         version: serverVersion,
-        build: getBuildInfo(),
+        ...(exposeFullDetails ? { build: getBuildInfo() } : {}),
         error: "database_unreachable"
       });
       return;
