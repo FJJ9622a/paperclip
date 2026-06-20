@@ -18,10 +18,24 @@ Build arguments:
 |-----|---------|---------|
 | `USER_UID` | `1000` | UID for the container `node` user (match your host UID to avoid permission issues on bind mounts) |
 | `USER_GID` | `1000` | GID for the container `node` group |
+| `BUILD_SHA` | `unknown` | Commit SHA embedded into `GET /api/health` build metadata |
+| `BUILD_BRANCH` | empty | Branch or tag embedded into `GET /api/health` build metadata |
+| `BUILD_TIMESTAMP` | empty | Deploy-build timestamp cache buster so `build.buildTimestamp` is regenerated during the server build |
 
 ```sh
 docker build -t paperclip-local \
   --build-arg USER_UID=$(id -u) --build-arg USER_GID=$(id -g) .
+```
+
+For release or deployment builds, pass the git metadata explicitly because the
+production build stage does not rely on `.git` being present:
+
+```sh
+docker build -t paperclip-local \
+  --build-arg BUILD_SHA="$(git rev-parse HEAD)" \
+  --build-arg BUILD_BRANCH="$(git rev-parse --abbrev-ref HEAD)" \
+  --build-arg BUILD_TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+  .
 ```
 
 ## One-liner (build + run)
