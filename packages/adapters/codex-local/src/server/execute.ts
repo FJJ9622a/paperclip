@@ -3,6 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  adapterRuntimeCredentialAssetFiles,
+  adapterRuntimeCredentialEnv,
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   overrideAdapterExecutionTargetRemoteCwd,
@@ -12,6 +14,7 @@ import {
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  materializeAdapterRuntimeCredentialAsset,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
@@ -366,6 +369,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const runtimeCredentialEnv = adapterRuntimeCredentialEnv(executionTarget);
+  const runtimeCredentialEnvKeys = Object.keys(runtimeCredentialEnv);
+  const codexHomeCredentialFiles = adapterRuntimeCredentialAssetFiles(executionTarget, "home");
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
@@ -397,44 +403,54 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
   const effectiveCodexHome = configuredCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
-
-  // Never launch a managed CODEX_HOME with no credentials. Without auth.json and
-  // with OPENAI_API_KEY="" the provider rejects every request with
-  // "401 Missing bearer"; fail fast with a clear adapter error instead of
-  // emitting unauthenticated calls. External overrides manage their own auth.
-  const effectiveHomeIsManaged = configuredCodexHome == null || configuredHomeIsManaged;
-  if (
-    effectiveHomeIsManaged &&
-    !configuredOpenAiApiKey &&
-    !(await codexHomeHasUsableAuth(effectiveCodexHome))
-  ) {
-    throw new Error(
-      `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
-        `(no usable auth.json and OPENAI_API_KEY is empty). ` +
-        `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
-        `OPENAI_API_KEY.`,
-    );
-  }
-  // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
-  // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
-  // target, so both local and sandboxed Codex processes pick up the routing.
-  // An explicit env.CODEX_HOME override is treated as user-managed and skipped.
-  const envConfigStrings = Object.fromEntries(
-    Object.entries(envConfig).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
-  const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
-    env: envConfigStrings,
-    codexHome: configuredCodexHome ? null : effectiveCodexHome,
+  const runtimeCodexHomeAsset = await materializeAdapterRuntimeCredentialAsset({
+    baseDir: effectiveCodexHome,
+    files: codexHomeCredentialFiles,
+    tempPrefix: "paperclip-codex-runtime-home-",
   });
+  const runtimeCodexHome = runtimeCodexHomeAsset.materialized
+    ? runtimeCodexHomeAsset.localDir
+    : effectiveCodexHome;
+
+  let preparedRuntimeConfig: Awaited<ReturnType<typeof prepareCodexRuntimeConfig>> | null = null;
   try {
-    for (const note of preparedRuntimeConfig.notes) {
+    // Never launch a managed CODEX_HOME with no credentials. Without auth.json and
+    // with OPENAI_API_KEY="" the provider rejects every request with
+    // "401 Missing bearer"; fail fast with a clear adapter error instead of
+    // emitting unauthenticated calls. External overrides manage their own auth.
+    const effectiveHomeIsManaged = configuredCodexHome == null || configuredHomeIsManaged;
+    if (
+      effectiveHomeIsManaged &&
+      !configuredOpenAiApiKey &&
+      !(await codexHomeHasUsableAuth(runtimeCodexHome))
+    ) {
+      throw new Error(
+        `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
+          `(no usable auth.json and OPENAI_API_KEY is empty). ` +
+          `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
+          `OPENAI_API_KEY.`,
+      );
+    }
+    // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
+    // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
+    // target, so both local and sandboxed Codex processes pick up the routing.
+    // An explicit env.CODEX_HOME override is treated as user-managed and skipped.
+    const envConfigStrings = Object.fromEntries(
+      Object.entries(envConfig).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+    preparedRuntimeConfig = await prepareCodexRuntimeConfig({
+      env: envConfigStrings,
+      codexHome: configuredCodexHome && !runtimeCodexHomeAsset.materialized ? null : runtimeCodexHome,
+    });
+    const activeRuntimeConfig = preparedRuntimeConfig;
+    for (const note of activeRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
     // Inject skills into the same CODEX_HOME that Codex will actually run with
     // (managed home in the default case, or an explicit override from adapter config).
-    const codexSkillsDir = resolveCodexSkillsDir(effectiveCodexHome);
+    const codexSkillsDir = resolveCodexSkillsDir(runtimeCodexHome);
     await ensureCodexSkillsInjected(
       onLog,
       {
@@ -467,7 +483,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             assets: [
               {
                 key: "home",
-                localDir: effectiveCodexHome,
+                localDir: runtimeCodexHome,
                 followSymlinks: true,
                 // Transient Codex home dirs (`tmp/`, `.tmp/`) can hold symlinks
                 // to the host Codex binary (e.g. `tmp/arg0`). With
@@ -572,7 +588,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (runtimePrimaryUrl) {
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     }
-    env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+    Object.assign(env, runtimeCredentialEnv);
+    env.CODEX_HOME = remoteCodexHome ?? runtimeCodexHome;
     if (!hasExplicitApiKey && authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
@@ -617,6 +634,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const loggedEnv = buildInvocationEnvForLogs(env, {
       runtimeEnv,
       includeRuntimeKeys: ["HOME"],
+      explicitSensitiveKeys: runtimeCredentialEnvKeys,
       resolvedCommand,
     });
 
@@ -761,8 +779,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
       );
     }
-    if (preparedRuntimeConfig.notes.length > 0) {
-      commandNotes.unshift(...preparedRuntimeConfig.notes);
+    if (activeRuntimeConfig.notes.length > 0) {
+      commandNotes.unshift(...activeRuntimeConfig.notes);
     }
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
@@ -1083,6 +1101,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // If the process dies before reaching this, the next
     // prepareCodexRuntimeConfig restores the original from the pre-run backup
     // written at prepare time.
-    await preparedRuntimeConfig.cleanup();
+    if (preparedRuntimeConfig) {
+      await preparedRuntimeConfig.cleanup();
+    }
+    await runtimeCodexHomeAsset.cleanup();
   }
 }

@@ -1,4 +1,8 @@
 import path from "node:path";
+import {
+  normalizeAdapterRuntimeCredentialMaterialization,
+  type AdapterRuntimeCredentialMaterialization,
+} from "./runtime-credentials.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -31,11 +35,28 @@ import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RuntimeProgressSink } from "./runtime-progress.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
+export {
+  adapterRuntimeCredentialAssetFiles,
+  adapterRuntimeCredentialEnv,
+  getAdapterRuntimeCredentialMaterialization,
+  hasAdapterRuntimeCredentialAssetFiles,
+  materializeAdapterRuntimeCredentialAsset,
+  normalizeAdapterRuntimeCredentialMaterialization,
+} from "./runtime-credentials.js";
+export type {
+  AdapterRuntimeCredentialAsset,
+  AdapterRuntimeCredentialFile,
+  AdapterRuntimeCredentialMaterialization,
+  AdapterRuntimeCredentialMaterializationHost,
+  AdapterRuntimeCredentialProvider,
+  MaterializedRuntimeCredentialAsset,
+} from "./runtime-credentials.js";
 
 export interface AdapterLocalExecutionTarget {
   kind: "local";
   environmentId?: string | null;
   leaseId?: string | null;
+  runtimeCredentialMaterialization?: AdapterRuntimeCredentialMaterialization | null;
 }
 
 export interface AdapterSshExecutionTarget {
@@ -45,6 +66,7 @@ export interface AdapterSshExecutionTarget {
   leaseId?: string | null;
   remoteCwd: string;
   spec: SshRemoteExecutionSpec;
+  runtimeCredentialMaterialization?: AdapterRuntimeCredentialMaterialization | null;
 }
 
 export interface AdapterSandboxExecutionTarget {
@@ -57,6 +79,7 @@ export interface AdapterSandboxExecutionTarget {
   remoteCwd: string;
   timeoutMs?: number | null;
   runner?: CommandManagedRuntimeRunner;
+  runtimeCredentialMaterialization?: AdapterRuntimeCredentialMaterialization | null;
 }
 
 export type AdapterExecutionTarget =
@@ -848,12 +871,16 @@ export function adapterExecutionTargetSessionMatches(
 export function parseAdapterExecutionTarget(value: unknown): AdapterExecutionTarget | null {
   const parsed = parseObject(value);
   const kind = readStringMeta(parsed, "kind");
+  const runtimeCredentialMaterialization = normalizeAdapterRuntimeCredentialMaterialization(
+    parsed.runtimeCredentialMaterialization,
+  );
 
   if (kind === "local") {
     return {
       kind: "local",
       environmentId: readStringMeta(parsed, "environmentId"),
       leaseId: readStringMeta(parsed, "leaseId"),
+      ...(runtimeCredentialMaterialization ? { runtimeCredentialMaterialization } : {}),
     };
   }
 
@@ -867,6 +894,7 @@ export function parseAdapterExecutionTarget(value: unknown): AdapterExecutionTar
       leaseId: readStringMeta(parsed, "leaseId"),
       remoteCwd: spec.remoteCwd,
       spec,
+      ...(runtimeCredentialMaterialization ? { runtimeCredentialMaterialization } : {}),
     };
   }
 
@@ -881,6 +909,7 @@ export function parseAdapterExecutionTarget(value: unknown): AdapterExecutionTar
       leaseId: readStringMeta(parsed, "leaseId"),
       remoteCwd,
       timeoutMs: typeof parsed.timeoutMs === "number" ? parsed.timeoutMs : null,
+      ...(runtimeCredentialMaterialization ? { runtimeCredentialMaterialization } : {}),
     };
   }
 

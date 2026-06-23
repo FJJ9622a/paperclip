@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
+  adapterRuntimeCredentialAssetFiles,
+  adapterRuntimeCredentialEnv,
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   overrideAdapterExecutionTargetRemoteCwd,
@@ -14,6 +16,7 @@ import {
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  materializeAdapterRuntimeCredentialAsset,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
@@ -170,6 +173,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const runtimeCredentialEnv = adapterRuntimeCredentialEnv(executionTarget);
+  const runtimeCredentialEnvKeys = Object.keys(runtimeCredentialEnv);
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
@@ -268,6 +273,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  Object.assign(env, runtimeCredentialEnv);
 
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
@@ -302,6 +308,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
+    explicitSensitiveKeys: runtimeCredentialEnvKeys,
     resolvedCommand,
   });
 
@@ -371,6 +378,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   const executionTargetIsSandbox = executionTarget?.kind === "remote" && executionTarget.transport === "sandbox";
+  const claudeConfigCredentialFiles = adapterRuntimeCredentialAssetFiles(executionTarget, "config-seed");
+  const hasRuntimeClaudeConfigFiles = claudeConfigCredentialFiles.length > 0;
+  const runtimeCredentialEnvKeys = Object.keys(adapterRuntimeCredentialEnv(executionTarget));
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -430,7 +440,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     0,
     asNumber(config.terminalResultCleanupGraceMs, 5_000),
   );
-  const effectiveEnv = Object.fromEntries(
+  let effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
@@ -467,43 +477,55 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const useManagedRemoteClaudeConfig =
     executionTargetIsRemote &&
-    adapterExecutionTargetUsesManagedHome(executionTarget) &&
-    !hasExplicitClaudeConfigDir;
+    !hasExplicitClaudeConfigDir &&
+    (adapterExecutionTargetUsesManagedHome(executionTarget) || hasRuntimeClaudeConfigFiles);
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
     ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
     : null;
-  const preparedExecutionTargetRuntime = executionTargetIsRemote
-    ? await (async () => {
-        await onLog(
-          "stdout",
-          `[paperclip] Syncing workspace and Claude runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-        );
-        return await prepareAdapterExecutionTargetRuntime({
-          runId,
-          target: executionTarget,
-          adapterKey: "claude",
-          timeoutSec,
-          workspaceLocalDir: cwd,
-          installCommand: SANDBOX_INSTALL_COMMAND,
-          detectCommand: command,
-          onProgress: (line) => onLog("stdout", line),
-          assets: [
-            {
-              key: "skills",
-              localDir: promptBundle.addDir,
-              followSymlinks: true,
-            },
-            ...(claudeConfigSeedDir
-              ? [{
-                key: "config-seed",
-                localDir: claudeConfigSeedDir,
+  const runtimeClaudeConfigAsset = await materializeAdapterRuntimeCredentialAsset({
+    baseDir: claudeConfigSeedDir ??
+      (!executionTargetIsRemote && !hasExplicitClaudeConfigDir && hasRuntimeClaudeConfigFiles
+        ? resolveSharedClaudeConfigDir(effectiveEnv)
+        : null),
+    files: !hasExplicitClaudeConfigDir ? claudeConfigCredentialFiles : [],
+    tempPrefix: "paperclip-claude-runtime-config-",
+  });
+  const runtimeClaudeConfigSeedDir = runtimeClaudeConfigAsset.materialized
+    ? runtimeClaudeConfigAsset.localDir
+    : claudeConfigSeedDir;
+  try {
+    const preparedExecutionTargetRuntime = executionTargetIsRemote
+      ? await (async () => {
+          await onLog(
+            "stdout",
+            `[paperclip] Syncing workspace and Claude runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+          );
+          return await prepareAdapterExecutionTargetRuntime({
+            runId,
+            target: executionTarget,
+            adapterKey: "claude",
+            timeoutSec,
+            workspaceLocalDir: cwd,
+            installCommand: SANDBOX_INSTALL_COMMAND,
+            detectCommand: command,
+            onProgress: (line) => onLog("stdout", line),
+            assets: [
+              {
+                key: "skills",
+                localDir: promptBundle.addDir,
                 followSymlinks: true,
-              }]
-              : []),
-          ],
-        });
-      })()
-    : null;
+              },
+              ...(runtimeClaudeConfigSeedDir
+                ? [{
+                  key: "config-seed",
+                  localDir: runtimeClaudeConfigSeedDir,
+                  followSymlinks: true,
+                }]
+                : []),
+            ],
+          });
+        })()
+      : null;
   if (preparedExecutionTargetRuntime?.workspaceRemoteDir) {
     effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir;
   }
@@ -540,7 +562,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? preparedExecutionTargetRuntime?.runtimeRootDir ??
       path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude")
     : null;
-  const remoteClaudeConfigSeedDir = claudeConfigSeedDir && remoteClaudeRuntimeRoot
+  const remoteClaudeConfigSeedDir = runtimeClaudeConfigSeedDir && remoteClaudeRuntimeRoot
     ? preparedExecutionTargetRuntime?.assetDirs["config-seed"] ??
       path.posix.join(remoteClaudeRuntimeRoot, "config-seed")
     : null;
@@ -570,6 +592,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
     );
   }
+  if (!executionTargetIsRemote && runtimeClaudeConfigAsset.materialized && !hasExplicitClaudeConfigDir) {
+    env.CLAUDE_CONFIG_DIR = runtimeClaudeConfigAsset.localDir;
+    effectiveEnv = Object.fromEntries(
+      Object.entries({ ...process.env, ...env }).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+    const runtimeEnv = ensurePathInEnv(effectiveEnv);
+    loggedEnv = buildInvocationEnvForLogs(env, {
+      runtimeEnv,
+      includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
+      explicitSensitiveKeys: runtimeCredentialEnvKeys,
+      resolvedCommand,
+    });
+  }
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
   if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
     paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
@@ -587,6 +624,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       loggedEnv = buildInvocationEnvForLogs(env, {
         runtimeEnv,
         includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
+        explicitSensitiveKeys: runtimeCredentialEnvKeys,
         resolvedCommand,
       });
       if (remoteClaudeConfigDir) {
@@ -1069,5 +1107,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       await restoreRemoteWorkspace();
     }
+  }
+  } finally {
+    await runtimeClaudeConfigAsset.cleanup();
   }
 }

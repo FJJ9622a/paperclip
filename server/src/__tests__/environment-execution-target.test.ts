@@ -9,6 +9,10 @@ vi.mock("../services/environment-config.js", () => ({
 }));
 
 import {
+  adapterExecutionTargetToRemoteSpec,
+  type AdapterRuntimeCredentialMaterialization,
+} from "@paperclipai/adapter-utils/execution-target";
+import {
   DEFAULT_SANDBOX_REMOTE_CWD,
   resolveEnvironmentExecutionTarget,
 } from "../services/environment-execution-target.js";
@@ -131,6 +135,50 @@ describe("resolveEnvironmentExecutionTarget", () => {
       transport: "sandbox",
       shellCommand: "bash",
     });
+  });
+
+  it("carries runtime credentials on sandbox targets without serializing them into remote specs", async () => {
+    const runtimeCredentialMaterialization: AdapterRuntimeCredentialMaterialization = {
+      provider: "codex",
+      assets: {
+        home: {
+          files: [{ relativePath: "auth.json", contents: "runtime-secret" }],
+        },
+      },
+    };
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: {
+        provider: "fake-plugin",
+        reuseLease: false,
+        timeoutMs: 30_000,
+      },
+    });
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "codex_local",
+      environment: {
+        id: "env-1",
+        driver: "sandbox",
+        config: {
+          provider: "fake-plugin",
+        },
+      },
+      leaseId: "lease-1",
+      leaseMetadata: {},
+      lease: null,
+      environmentRuntime: null,
+      runtimeCredentialMaterialization,
+    });
+
+    expect(target).toMatchObject({
+      kind: "remote",
+      transport: "sandbox",
+      runtimeCredentialMaterialization,
+    });
+    expect(JSON.stringify(adapterExecutionTargetToRemoteSpec(target))).not.toContain("runtime-secret");
   });
 
   it("resolves SSH execution targets in bridge mode", async () => {

@@ -3,6 +3,7 @@ import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
+  type AdapterRuntimeCredentialMaterialization,
 } from "@paperclipai/adapter-utils/execution-target";
 import { parseObject } from "../adapters/utils.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
@@ -23,13 +24,22 @@ export async function resolveEnvironmentExecutionTarget(input: {
   leaseMetadata: Record<string, unknown> | null;
   lease?: EnvironmentLease | null;
   environmentRuntime?: EnvironmentRuntimeService | null;
+  runtimeCredentialMaterialization?: AdapterRuntimeCredentialMaterialization | null;
 }): Promise<AdapterExecutionTarget | null> {
-  if (input.environment.driver === "local") {
+  const withRuntimeCredentials = <Target extends AdapterExecutionTarget>(target: Target): Target => {
+    if (!input.runtimeCredentialMaterialization) return target;
     return {
+      ...target,
+      runtimeCredentialMaterialization: input.runtimeCredentialMaterialization,
+    };
+  };
+
+  if (input.environment.driver === "local") {
+    return withRuntimeCredentials({
       kind: "local",
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
-    };
+    });
   }
 
   if (input.environment.driver === "sandbox") {
@@ -64,7 +74,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
         ? input.leaseMetadata.shellCommand
         : null;
 
-    return {
+    return withRuntimeCredentials({
       kind: "remote",
       transport: "sandbox",
       providerKey: parsed.config.provider,
@@ -102,7 +112,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
             },
           }
         : undefined,
-    };
+    });
   }
 
   if (
@@ -134,7 +144,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       ? input.leaseMetadata.remoteCwd.trim()
       : parsed.config.remoteWorkspacePath;
 
-  return {
+  return withRuntimeCredentials({
     kind: "remote",
     transport: "ssh",
     environmentId: input.environment.id ?? null,
@@ -150,7 +160,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       strictHostKeyChecking: parsed.config.strictHostKeyChecking,
       remoteCwd,
     },
-  };
+  });
 }
 
 export async function resolveEnvironmentExecutionTransport(

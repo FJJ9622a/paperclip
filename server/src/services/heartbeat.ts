@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -25,6 +25,7 @@ import {
 } from "@paperclipai/shared";
 import {
   agents,
+  agentConfigRevisions,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
@@ -193,6 +194,11 @@ import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.j
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
+import {
+  createSubscriptionCredentialRuntimeStore,
+  providerForSubscriptionCredentialAdapter,
+  resolveByoSubscriptionRuntimeCredentialMaterialization,
+} from "./runtime-credential-materialization.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
   assertLowTrustRuntimeServicesAllowed,
@@ -1722,6 +1728,16 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readRequestedUserIdFromContext(contextSnapshot: Record<string, unknown>): string | null {
+  const explicitRuntimeUserId =
+    readNonEmptyString(contextSnapshot.runtimeCredentialUserId) ??
+    readNonEmptyString(contextSnapshot.subscriptionCredentialUserId);
+  if (explicitRuntimeUserId) return explicitRuntimeUserId;
+  return readNonEmptyString(contextSnapshot.requestedByActorType) === "user"
+    ? readNonEmptyString(contextSnapshot.requestedByActorId)
+    : null;
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -3395,6 +3411,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
+  const subscriptionCredentialRuntimeStore = createSubscriptionCredentialRuntimeStore(db);
   const environmentRuntime = options.environmentRuntime ?? environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -3548,6 +3565,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionWorkspaceId: issues.executionWorkspaceId,
         executionWorkspacePreference: issues.executionWorkspacePreference,
         assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        createdByUserId: issues.createdByUserId,
         assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
         executionPolicy: issues.executionPolicy,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
@@ -3558,6 +3577,66 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function resolveAgentCredentialOwnerUserId(companyId: string, agentId: string): Promise<string | null> {
+    return db
+      .select({ createdByUserId: agentConfigRevisions.createdByUserId })
+      .from(agentConfigRevisions)
+      .where(
+        and(
+          eq(agentConfigRevisions.companyId, companyId),
+          eq(agentConfigRevisions.agentId, agentId),
+          isNotNull(agentConfigRevisions.createdByUserId),
+        ),
+      )
+      .orderBy(asc(agentConfigRevisions.createdAt))
+      .limit(1)
+      .then((rows) => readNonEmptyString(rows[0]?.createdByUserId));
+  }
+
+  async function resolveRunRequestedByUserId(run: typeof heartbeatRuns.$inferSelect): Promise<string | null> {
+    if (!run.wakeupRequestId) return null;
+    return db
+      .select({
+        requestedByActorType: agentWakeupRequests.requestedByActorType,
+        requestedByActorId: agentWakeupRequests.requestedByActorId,
+      })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.id, run.wakeupRequestId),
+          eq(agentWakeupRequests.companyId, run.companyId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.requestedByActorType === "user"
+          ? readNonEmptyString(row.requestedByActorId)
+          : null;
+      });
+  }
+
+  async function resolveRuntimeCredentialUserId(input: {
+    companyId: string;
+    agentId: string;
+    run: typeof heartbeatRuns.$inferSelect;
+    contextSnapshot: Record<string, unknown>;
+    issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null;
+  }): Promise<string | null> {
+    const contextUserId = readRequestedUserIdFromContext(input.contextSnapshot);
+    if (contextUserId) return contextUserId;
+
+    const runRequestedByUserId = await resolveRunRequestedByUserId(input.run);
+    if (runRequestedByUserId) return runRequestedByUserId;
+
+    const issueUserId =
+      readNonEmptyString(input.issueContext?.assigneeUserId) ??
+      readNonEmptyString(input.issueContext?.createdByUserId);
+    if (issueUserId) return issueUserId;
+
+    return await resolveAgentCredentialOwnerUserId(input.companyId, input.agentId);
   }
 
   async function getRoutineEnvForExecutionIssue(
@@ -9080,6 +9159,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       lease: acquiredEnvironment.lease,
       leaseContext: acquiredEnvironment.leaseContext,
     };
+    const runtimeCredentialProvider = providerForSubscriptionCredentialAdapter(agent.adapterType);
+    const runtimeCredentialUserId = runtimeCredentialProvider
+      ? await resolveRuntimeCredentialUserId({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          run,
+          contextSnapshot: context,
+          issueContext,
+        })
+      : null;
+    const runtimeCredentialMaterialization = await resolveByoSubscriptionRuntimeCredentialMaterialization({
+      store: subscriptionCredentialRuntimeStore,
+      companyId: agent.companyId,
+      userId: runtimeCredentialUserId,
+      provider: runtimeCredentialProvider,
+      agentId: agent.id,
+      issueId: issueId ?? null,
+      heartbeatRunId: run.id,
+    });
     const realizationResult = await envOrchestrator.realizeForRun({
       environment: selectedEnvironment,
       lease: activeEnvironmentLease.lease,
@@ -9090,6 +9188,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       executionWorkspace,
       effectiveExecutionWorkspaceMode,
       persistedExecutionWorkspace,
+      runtimeCredentialMaterialization,
     });
     activeEnvironmentLease = {
       ...activeEnvironmentLease,

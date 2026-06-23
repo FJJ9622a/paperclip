@@ -1108,10 +1108,16 @@ export function renderPaperclipWakePrompt(
   return lines.join("\n").trim();
 }
 
-export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
+export function redactEnvForLogs(
+  env: Record<string, string>,
+  options: { explicitSensitiveKeys?: Iterable<string> } = {},
+): Record<string, string> {
+  const explicitSensitiveKeys = new Set(
+    Array.from(options.explicitSensitiveKeys ?? [], (key) => key.trim()).filter(Boolean),
+  );
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    redacted[key] = SENSITIVE_ENV_KEY.test(key) ? REDACTED_LOG_VALUE : value;
+    redacted[key] = SENSITIVE_ENV_KEY.test(key) || explicitSensitiveKeys.has(key) ? REDACTED_LOG_VALUE : value;
   }
   return redacted;
 }
@@ -1125,6 +1131,7 @@ export function buildInvocationEnvForLogs(
   options: {
     runtimeEnv?: NodeJS.ProcessEnv | Record<string, string>;
     includeRuntimeKeys?: string[];
+    explicitSensitiveKeys?: Iterable<string>;
     resolvedCommand?: string | null;
     resolvedCommandEnvKey?: string;
   } = {},
@@ -1144,7 +1151,7 @@ export function buildInvocationEnvForLogs(
     merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] = redactCommandTextForLogs(resolvedCommand);
   }
 
-  return redactEnvForLogs(merged);
+  return redactEnvForLogs(merged, { explicitSensitiveKeys: options.explicitSensitiveKeys });
 }
 
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {

@@ -39,6 +39,7 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
   type AdapterRemoteExecutionSpec,
+  type AdapterRuntimeCredentialMaterialization,
 } from "@paperclipai/adapter-utils/execution-target";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
@@ -339,6 +340,7 @@ export function environmentRunOrchestrator(
     executionWorkspace: RealizedExecutionWorkspace;
     effectiveExecutionWorkspaceMode: string | null;
     persistedExecutionWorkspace: ExecutionWorkspace | null;
+    runtimeCredentialMaterialization?: AdapterRuntimeCredentialMaterialization | null;
   }): Promise<EnvironmentRealizationResult> {
     const {
       environment,
@@ -478,6 +480,7 @@ export function environmentRunOrchestrator(
         leaseMetadata: (lease.metadata as Record<string, unknown> | null) ?? null,
         lease,
         environmentRuntime,
+        runtimeCredentialMaterialization: input.runtimeCredentialMaterialization,
       });
     } catch (err) {
       throw new EnvironmentRunError(
