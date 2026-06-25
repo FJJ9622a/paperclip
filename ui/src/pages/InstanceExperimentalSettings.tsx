@@ -341,7 +341,7 @@ export function InstanceExperimentalSettings() {
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Dynamic Secrets</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Enables experimental dynamic secret resolution for later-stage secret bindings and command-backed values.
+              Enables experimental command-backed secret resolution. Review the dynamic secrets operator guide before attaching generator commands.
             </p>
           </div>
           <ToggleSwitch

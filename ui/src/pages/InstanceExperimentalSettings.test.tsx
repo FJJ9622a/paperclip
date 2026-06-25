@@ -201,7 +201,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(container.textContent).toContain("Dynamic Secrets");
     expect(container.textContent).toContain(
-      "Enables experimental dynamic secret resolution for later-stage secret bindings and command-backed values.",
+      "Enables experimental command-backed secret resolution. Review the dynamic secrets operator guide before attaching generator commands.",
     );
 
     const toggle = container.querySelector<HTMLButtonElement>(DYNAMIC_SECRETS_TOGGLE_SELECTOR);
