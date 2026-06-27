@@ -15,7 +15,17 @@ Live host: `ubuntu@100.26.101.226` | URL: https://paper.mpi-edx.com | Container:
 - **Private local coding:** `ollama` + `ornith:9b` (slow on CPU, no GPU)
 - **Do not use** `authMode: api_key` or `XAI_API_KEY` — MPI policy is CLI subscription only
 
-## Health and smoke
+## Production readiness gate
+
+```bash
+bash ~/paperclip/scripts/prod-readiness.sh
+```
+
+**Pass:** script exits 0 and prints `PRODUCTION_READY`.
+
+Covers: local + public health, Grok CLI subscription (no API key), Ollama `ornith:9b`, runtime patches, DB agents (`Grok Build` + `Ornith Local`), adapter tests, grok auth ownership, cron, git clean.
+
+## Health and smoke (quick)
 
 ```bash
 curl -fsS http://127.0.0.1:3100/api/health
@@ -24,7 +34,7 @@ docker exec -u node docker-server-1 grok models | head -5
 ollama list | head -8
 ```
 
-**Pass:** health `status: ok`; host and container grok both logged in.
+**Pass:** health `status: ok`; host and container grok both logged in with `grok.com`.
 
 ## Restart
 
