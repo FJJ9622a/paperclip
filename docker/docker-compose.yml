@@ -38,7 +38,6 @@ services:
       ANTHROPIC_AUTH_TOKEN: "${ANTHROPIC_AUTH_TOKEN:-}"
       ANTHROPIC_BETAS: "${ANTHROPIC_BETAS:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
-      XAI_API_KEY: "${XAI_API_KEY:-}"
       OLLAMA_HOST: "http://host.docker.internal:11434"
       OPENCODE_ALLOW_ALL_MODELS: "true"
     extra_hosts:

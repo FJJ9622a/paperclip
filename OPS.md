@@ -6,14 +6,14 @@ Live host: `ubuntu@100.26.101.226` | URL: https://paper.mpi-edx.com | Container:
 
 | Adapter ID | Label | Default model | Auth / URL |
 | --- | --- | --- | --- |
-| `grok_local` | xAI Grok | `grok-build` | `cli` (grok login) or `api_key` (`XAI_API_KEY`) |
+| `grok_local` | xAI Grok | `grok-build` | **`cli` only** — grok.com subscription (`grok login`). No API keys. |
 | `ollama` | Ollama | `ornith:9b` | `http://host.docker.internal:11434` |
 
 ### Agent setup recommendations
 
-- **Primary agentic work:** `grok_local` + `grok-build` + `authMode: cli`
-- **Headless / automation:** `grok_local` + `authMode: api_key` + env `XAI_API_KEY`
+- **All Grok work:** `grok_local` + `grok-build` + `authMode: cli` (subscription session)
 - **Private local coding:** `ollama` + `ornith:9b` (slow on CPU, no GPU)
+- **Do not use** `authMode: api_key` or `XAI_API_KEY` — MPI policy is CLI subscription only
 
 ## Health and smoke
 
@@ -73,12 +73,9 @@ Hardware: 30 GB RAM, 4 vCPU, no GPU — do not deploy Ornith 397B.
 - Config: `~/.grok/config.toml` (`auto_update = true`)
 - Mount: `/home/ubuntu/.grok` → `/paperclip/.grok` in container
 
-## API key mode (`authMode: api_key`)
+## Grok auth policy
 
-1. Add `XAI_API_KEY=xai-...` to `~/paperclip/docker/.env` (never commit).
-2. Ensure `docker-compose.yml` maps `XAI_API_KEY: "${XAI_API_KEY:-}"`.
-3. Restart: `cd ~/paperclip/docker && docker compose up -d server`
-4. Verify: `docker exec docker-server-1 sh -c 'test -n \"$XAI_API_KEY\" && curl -fsS -H \"Authorization: Bearer $XAI_API_KEY\" https://api.x.ai/v1/models | head -c 100'`
+MPI uses **Grok CLI subscription only** (`grok login` → `~/.grok/auth.json`). Do not configure `XAI_API_KEY` in `.env` or compose. In Paperclip, set every Grok agent to `authMode: cli`.
 
 ## Local agent docs (Windows workspace)
 
