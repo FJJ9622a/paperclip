@@ -22,43 +22,82 @@ When a heartbeat fires, Paperclip:
 | [Codex Local](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally |
 | [Gemini Local](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |
 | OpenCode Local | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
-| Hermes Local | `hermes_local` | Runs Hermes CLI locally |
 | Cursor | `cursor` | Runs Cursor in background mode |
 | Pi Local | `pi_local` | Runs an embedded Pi agent locally |
+| Hermes Local | `hermes_local` | Runs the local Hermes CLI through `@paperclipai/hermes-paperclip-adapter` |
+| Hermes Gateway | `hermes_gateway` | Calls an already-running Hermes API server through `@paperclipai/hermes-paperclip-adapter/gateway` |
 | OpenClaw Gateway | `openclaw_gateway` | Connects to an OpenClaw gateway endpoint |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
 
+### Hermes local vs gateway
+
+Use `hermes_local` when Paperclip should start the local `hermes` CLI on the
+same host for each heartbeat. Use `hermes_gateway` when Hermes is already
+running as an HTTP/SSE API server and Paperclip should call that server instead
+of spawning a process. Both type keys are stable built-ins.
+
+The unified Hermes package owns both built-in adapters. The older
+`@paperclipai/adapter-hermes-gateway` package remains only as a deprecated
+compatibility shim that re-exports the gateway entrypoints for one release.
+New plugin overrides should target `@paperclipai/hermes-paperclip-adapter` and
+set the desired type key (`hermes_local` or `hermes_gateway`).
+
+### External (plugin) adapters
+
+These adapters ship as standalone npm packages and are installed via the plugin system:
+
+| Adapter | Package | Type Key | Description |
+|---------|---------|----------|-------------|
+| Droid Local | `@henkey/droid-paperclip-adapter` | `droid_local` | Runs Factory Droid locally |
+
+## External Adapters
+
+You can build and distribute adapters as standalone packages — no changes to Paperclip's source code required. External adapters are loaded at startup via the plugin system.
+
+```sh
+# Install from npm via API
+curl -X POST http://localhost:3102/api/adapters \
+  -d '{"packageName": "my-paperclip-adapter"}'
+
+# Or link from a local directory
+curl -X POST http://localhost:3102/api/adapters \
+  -d '{"localPath": "/home/user/my-adapter"}'
+```
+
+See [External Adapters](/adapters/external-adapters) for the full guide.
+
 ## Adapter Architecture
 
-Each adapter is a package with three modules:
+Each adapter is a package with modules consumed by three registries:
 
 ```
-packages/adapters/<name>/
+my-adapter/
   src/
     index.ts            # Shared metadata (type, label, models)
     server/
       execute.ts        # Core execution logic
       parse.ts          # Output parsing
       test.ts           # Environment diagnostics
-    ui/
-      parse-stdout.ts   # Stdout -> transcript entries for run viewer
-      build-config.ts   # Form values -> adapterConfig JSON
+    ui-parser.ts        # Self-contained UI transcript parser (for external adapters)
     cli/
       format-event.ts   # Terminal output for `paperclipai run --watch`
 ```
 
-Three registries consume these modules:
-
-| Registry | What it does |
-|----------|-------------|
-| **Server** | Executes agents, captures results |
-| **UI** | Renders run transcripts, provides config forms |
-| **CLI** | Formats terminal output for live watching |
+| Registry | What it does | Source |
+|----------|-------------|--------|
+| **Server** | Executes agents, captures results | `createServerAdapter()` from package root |
+| **UI** | Renders run transcripts, provides config forms | `ui-parser.js` (dynamic) or static import (built-in) |
+| **CLI** | Formats terminal output for live watching | Static import |
 
 ## Choosing an Adapter
 
-- **Need a coding agent?** Use `claude_local`, `codex_local`, `opencode_local`, or `hermes_local`
+- **Need a coding agent?** Use `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, or install `droid_local` as an external plugin
+- **Need Hermes on another host or already running as a service?** Use `hermes_gateway`
 - **Need to run a script or command?** Use `process`
-- **Need to call an external service?** Use `http`
-- **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter)
+- **Need to call a custom external service?** Use `http`
+- **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter) or [build an external adapter plugin](/adapters/external-adapters)
+
+## UI Parser Contract
+
+External adapters can ship a self-contained UI parser that tells the Paperclip web UI how to render their stdout. Without it, the UI uses a generic shell parser. See the [UI Parser Contract](/adapters/adapter-ui-parser) for details.

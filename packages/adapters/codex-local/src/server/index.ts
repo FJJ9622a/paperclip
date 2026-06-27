@@ -1,7 +1,14 @@
 export { execute, ensureCodexSkillsInjected } from "./execute.js";
+export {
+  reconcileManagedCodexHome,
+  isManagedCodexHomePath,
+  type ReconcileManagedCodexHomeInput,
+  type ReconcileManagedCodexHomeResult,
+  type ReconcileManagedCodexHomeStatus,
+} from "./codex-home.js";
 export { listCodexSkills, syncCodexSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
-export { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+export { parseCodexJsonl, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {
   getQuotaWindows,
   readCodexAuthInfo,

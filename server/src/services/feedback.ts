@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, getTableColumns, gte, lte, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gte, isNull, lte, ne, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -63,6 +63,7 @@ const MAX_SKILLS = 20;
 const MAX_INSTRUCTION_FILES = 20;
 const MAX_TRACE_FILE_CHARS = 10_000_000;
 const DEFAULT_INSTANCE_SETTINGS_SINGLETON_KEY = "default";
+const FEEDBACK_EXPORT_BACKEND_NOT_CONFIGURED = "Feedback export backend is not configured";
 
 type FeedbackTraceRow = typeof feedbackExports.$inferSelect & {
   issueIdentifier: string | null;
@@ -88,6 +89,9 @@ type FeedbackTargetRecord = {
   createdAt: Date;
   authorAgentId: string | null;
   authorUserId: string | null;
+  authorType?: string | null;
+  presentation?: unknown;
+  metadata?: unknown;
   createdByRunId: string | null;
   documentId: string | null;
   documentKey: string | null;
@@ -796,8 +800,12 @@ async function resolveFeedbackTarget(
         companyId: issueComments.companyId,
         authorAgentId: issueComments.authorAgentId,
         authorUserId: issueComments.authorUserId,
+        authorType: issueComments.authorType,
+        presentation: issueComments.presentation,
+        metadata: issueComments.metadata,
         createdByRunId: issueComments.createdByRunId,
         body: issueComments.body,
+        deletedAt: issueComments.deletedAt,
         createdAt: issueComments.createdAt,
       })
       .from(issueComments)
@@ -805,6 +813,9 @@ async function resolveFeedbackTarget(
       .then((rows) => rows[0] ?? null);
 
     if (!targetComment || targetComment.issueId !== issue.id || targetComment.companyId !== issue.companyId) {
+      throw notFound("Feedback target not found");
+    }
+    if (targetComment.deletedAt) {
       throw notFound("Feedback target not found");
     }
     if (!targetComment.authorAgentId) {
@@ -819,6 +830,9 @@ async function resolveFeedbackTarget(
       createdAt: targetComment.createdAt,
       authorAgentId: targetComment.authorAgentId,
       authorUserId: targetComment.authorUserId,
+      authorType: targetComment.authorType ?? (targetComment.authorAgentId ? "agent" : targetComment.authorUserId ? "user" : "system"),
+      presentation: targetComment.presentation ?? null,
+      metadata: targetComment.metadata ?? null,
       createdByRunId: targetComment.createdByRunId ?? null,
       documentId: null,
       documentKey: null,
@@ -832,6 +846,9 @@ async function resolveFeedbackTarget(
         createdAt: targetComment.createdAt.toISOString(),
         authorAgentId: targetComment.authorAgentId,
         authorUserId: targetComment.authorUserId,
+        authorType: targetComment.authorType ?? (targetComment.authorAgentId ? "agent" : targetComment.authorUserId ? "user" : "system"),
+        presentation: targetComment.presentation ?? null,
+        metadata: targetComment.metadata ?? null,
         createdByRunId: targetComment.createdByRunId ?? null,
         issuePath,
         targetPath: issuePath ? `${issuePath}#comment-${targetComment.id}` : null,
@@ -917,10 +934,18 @@ async function listIssueContextItems(
         createdAt: issueComments.createdAt,
         authorAgentId: issueComments.authorAgentId,
         authorUserId: issueComments.authorUserId,
+        authorType: issueComments.authorType,
+        presentation: issueComments.presentation,
+        metadata: issueComments.metadata,
         createdByRunId: issueComments.createdByRunId,
+        deletedAt: issueComments.deletedAt,
       })
       .from(issueComments)
-      .where(and(eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id))),
+      .where(and(
+        eq(issueComments.companyId, issue.companyId),
+        eq(issueComments.issueId, issue.id),
+        isNull(issueComments.deletedAt),
+      )),
     db
       .select({
         targetId: documentRevisions.id,
@@ -951,6 +976,9 @@ async function listIssueContextItems(
       createdAt: row.createdAt,
       authorAgentId: row.authorAgentId,
       authorUserId: row.authorUserId,
+      authorType: row.authorType ?? (row.authorAgentId ? "agent" : row.authorUserId ? "user" : "system"),
+      presentation: row.presentation ?? null,
+      metadata: row.metadata ?? null,
       createdByRunId: row.createdByRunId ?? null,
       documentId: null,
       documentKey: null,
@@ -1022,6 +1050,9 @@ async function buildIssueContext(
       createdAt: item.createdAt.toISOString(),
       authorAgentId: item.authorAgentId,
       authorUserId: item.authorUserId,
+      authorType: item.authorType ?? null,
+      presentation: item.presentation ?? null,
+      metadata: item.metadata ?? null,
       createdByRunId: item.createdByRunId,
       documentKey: item.documentKey,
       documentTitle: item.documentTitle,
@@ -1742,15 +1773,48 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
 
     flushPendingFeedbackTraces: async (input?: {
       companyId?: string;
+      traceId?: string;
       limit?: number;
       now?: Date;
     }) => {
       const shareClient = options.shareClient;
       if (!shareClient) {
+        const filters = [eq(feedbackExports.status, "pending")];
+        if (input?.companyId) {
+          filters.push(eq(feedbackExports.companyId, input.companyId));
+        }
+        if (input?.traceId) {
+          filters.push(eq(feedbackExports.id, input.traceId));
+        }
+
+        const rows = await db
+          .select({
+            id: feedbackExports.id,
+            attemptCount: feedbackExports.attemptCount,
+          })
+          .from(feedbackExports)
+          .where(and(...filters))
+          .orderBy(asc(feedbackExports.createdAt), asc(feedbackExports.id))
+          .limit(Math.max(1, Math.min(input?.limit ?? 25, 200)));
+
+        const attemptAt = input?.now ?? new Date();
+        for (const row of rows) {
+          await db
+            .update(feedbackExports)
+            .set({
+              status: "failed",
+              attemptCount: row.attemptCount + 1,
+              lastAttemptedAt: attemptAt,
+              failureReason: FEEDBACK_EXPORT_BACKEND_NOT_CONFIGURED,
+              updatedAt: attemptAt,
+            })
+            .where(eq(feedbackExports.id, row.id));
+        }
+
         return {
-          attempted: 0,
+          attempted: rows.length,
           sent: 0,
-          failed: 0,
+          failed: rows.length,
         };
       }
 
@@ -1760,6 +1824,9 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
       ];
       if (input?.companyId) {
         filters.push(eq(feedbackExports.companyId, input.companyId));
+      }
+      if (input?.traceId) {
+        filters.push(eq(feedbackExports.id, input.traceId));
       }
 
       const rows = await db
@@ -1983,7 +2050,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           })
           .where(eq(feedbackVotes.id, savedVote.id));
 
-        await tx
+        const [savedTrace] = await tx
           .insert(feedbackExports)
           .values({
             companyId: issue.companyId,
@@ -2030,6 +2097,9 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
               failureReason: null,
               updatedAt: now,
             },
+          })
+          .returning({
+            id: feedbackExports.id,
           });
 
         return {
@@ -2037,6 +2107,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
             ...savedVote,
             redactionSummary: artifacts.redactionSummary,
           },
+          traceId: savedTrace?.id ?? null,
           consentEnabledNow,
           persistedSharingPreference,
           sharingEnabled: sharedWithLabs,

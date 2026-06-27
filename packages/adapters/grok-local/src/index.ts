@@ -1,14 +1,10 @@
 export const type = "grok_local";
-export const label = "xAI Grok (local)";
-export const DEFAULT_GROK_COMMAND = "grok";
-export const DEFAULT_GROK_MODEL = "grok-build";
-export const DEFAULT_GROK_AUTH_MODE = "cli";
+export const label = "Grok Build (local)";
 
-export const models: Array<{ id: string; label: string }> = [
-  { id: "grok-build", label: "Grok Build" },
-  { id: "grok-composer-2.5-fast", label: "Composer 2.5 Fast" },
-  { id: "grok-4", label: "Grok 4 (API)" },
-  { id: "grok-3", label: "Grok 3 (API)" },
+export const DEFAULT_GROK_LOCAL_MODEL = "grok-build";
+
+export const models = [
+  { id: DEFAULT_GROK_LOCAL_MODEL, label: DEFAULT_GROK_LOCAL_MODEL },
 ];
 
 export const agentConfigurationDoc = `# grok_local agent configuration
@@ -16,26 +12,34 @@ export const agentConfigurationDoc = `# grok_local agent configuration
 Adapter: grok_local
 
 Use when:
-- You want Paperclip to run xAI Grok locally via the Grok CLI
-- You want either session-based CLI auth or API key auth
+- You want Paperclip to run the native Grok Build CLI locally on the host machine
+- You want resumable Grok sessions across heartbeats via \`--resume\`
+- You want Paperclip-managed instructions and skills staged into the execution workspace using Grok's native discovery paths (\`Agents.md\` and \`.claude/skills\`)
 
-## Auth modes
+Don't use when:
+- You need a webhook-style external invocation (use http or openclaw_gateway)
+- You only need a one-shot script without an AI coding agent loop (use process)
+- Grok CLI is not installed or authenticated on the machine that runs Paperclip
 
-| authMode | Description |
-|----------|-------------|
-| cli | Direct CLI connection using grok login session (~/.grok). No API key required. |
-| api_key | Authenticate with an xAI API key (config.apiKey or env.XAI_API_KEY). Uses Grok CLI when available, otherwise direct xAI REST API. |
+Core fields:
+- cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
+- instructionsFilePath (string, optional): absolute path to a markdown instructions file. Paperclip stages it into the execution workspace as \`Agents.md\` when safe, otherwise falls back to \`--rules @file\`
+- promptTemplate (string, optional): run prompt template
+- model (string, optional): Grok model id. Defaults to grok-build.
+- permissionMode (string, optional): Grok permission mode. Defaults to \`dontAsk\`
+- reasoningEffort (string, optional): Grok reasoning effort passed via \`--reasoning-effort\`
+- maxTurns (number, optional): maximum agent turns for the run
+- command (string, optional): defaults to "grok"
+- extraArgs (string[], optional): additional CLI args
+- env (object, optional): KEY=VALUE environment variables
 
-## Core fields
+Operational fields:
+- timeoutSec (number, optional): run timeout in seconds
+- graceSec (number, optional): SIGTERM grace period in seconds
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| authMode | string | cli | cli or api_key |
-| apiKey | string | | xAI API key (api_key mode). Prefer storing via env.XAI_API_KEY secret binding. |
-| model | string | grok-build | Model id (required) |
-| command | string | grok | Path to grok CLI binary |
-| cwd | string | | Working directory |
-| promptTemplate | string | | Run prompt template |
-| timeoutSec | number | 600 | Timeout in seconds |
-| env | object | | Extra environment variables |
+Notes:
+- Runs use \`grok --single\` with \`--output-format streaming-json\`.
+- Sessions resume with \`--resume <sessionId>\` when the saved session cwd matches the current cwd.
+- Paperclip stages desired runtime skills into \`.claude/skills\` inside the execution workspace so Grok discovers them as project skills.
+- Use \`grok models\` to inspect authentication and available models on the host.
 `;
