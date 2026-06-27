@@ -46,6 +46,8 @@ crontab -l | grep grok     # 10-min chown guard
 
 Patches live on host: `~/paperclip/data/docker-paperclip/`
 
+**Important:** `adapter-grok` must stay the **MPI custom build** (from commit `d60aa93d`), not a straight copy of upstream `packages/adapters/grok-local`. Upstream grok-local requires `@paperclipai/adapter-utils` in the runtime symlink path and will crash the server if copied blindly to `data/docker-paperclip/adapter-grok`. Safe to sync `adapter-ollama` from `packages/adapters/ollama-local`.
+
 | Path | Role |
 | --- | --- |
 | `adapter-grok/` | `grok_local` adapter source |
