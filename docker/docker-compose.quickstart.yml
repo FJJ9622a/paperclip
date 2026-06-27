@@ -5,14 +5,23 @@ services:
       dockerfile: Dockerfile
     ports:
       - "${PAPERCLIP_PORT:-3100}:3100"
+    entrypoint: ["/bin/sh", "-c", "sh /paperclip/startup-patch.sh; exec sh /app/scripts/docker-entrypoint.sh \"$@\"", "--"]
+    command: ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
     environment:
       HOST: "0.0.0.0"
       PAPERCLIP_HOME: "/paperclip"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      ANTHROPIC_AUTH_TOKEN: "${ANTHROPIC_AUTH_TOKEN:-}"
+      ANTHROPIC_BETAS: "${ANTHROPIC_BETAS:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      OLLAMA_HOST: "http://host.docker.internal:11434"
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
     volumes:
       - "${PAPERCLIP_DATA_DIR:-../data/docker-paperclip}:/paperclip"

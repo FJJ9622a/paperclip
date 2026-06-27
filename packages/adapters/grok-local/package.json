@@ -1,0 +1,11 @@
+{
+  "name": "@paperclipai/adapter-grok-local",
+  "version": "0.3.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server/index.ts"
+  },
+  "dependencies": {},
+  "license": "MIT"
+}

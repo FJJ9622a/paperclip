@@ -11,7 +11,7 @@ services:
       timeout: 5s
       retries: 30
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -21,6 +21,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3100:3100"
+    entrypoint: ["/bin/sh", "-c", "sh /paperclip/startup-patch.sh; exec sh /app/scripts/docker-entrypoint.sh \"$@\"", "--"]
+    command: ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
     environment:
       DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
       PORT: "3100"
@@ -29,12 +31,25 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      HOST: "0.0.0.0"
+      PAPERCLIP_HOME: "/paperclip"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      ANTHROPIC_AUTH_TOKEN: "${ANTHROPIC_AUTH_TOKEN:-}"
+      ANTHROPIC_BETAS: "${ANTHROPIC_BETAS:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      XAI_API_KEY: "${XAI_API_KEY:-}"
+      OLLAMA_HOST: "http://host.docker.internal:11434"
+      OPENCODE_ALLOW_ALL_MODELS: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
     volumes:
-      - paperclip-data:/paperclip
+      - "${PAPERCLIP_DATA_DIR:-../data/docker-paperclip}:/paperclip"
+      - "/home/ubuntu/.grok:/paperclip/.grok"
     depends_on:
       db:
         condition: service_healthy
 
 volumes:
   pgdata:
-  paperclip-data:

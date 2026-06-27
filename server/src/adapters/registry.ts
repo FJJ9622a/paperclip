@@ -79,6 +79,19 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+
+import {
+  execute as grokExecute,
+  testEnvironment as grokTestEnvironment,
+  sessionCodec as grokSessionCodec,
+} from "@paperclipai/adapter-grok-local/server";
+import { agentConfigurationDoc as grokAgentConfigurationDoc, models as grokModels } from "@paperclipai/adapter-grok-local";
+import {
+  execute as ollamaExecute,
+  testEnvironment as ollamaTestEnvironment,
+  sessionCodec as ollamaSessionCodec,
+} from "@paperclipai/adapter-ollama-local/server";
+import { agentConfigurationDoc as ollamaAgentConfigurationDoc, models as ollamaModels } from "@paperclipai/adapter-ollama-local";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -188,6 +201,26 @@ const hermesLocalAdapter: ServerAdapterModule = {
   detectModel: () => detectModelFromHermes(),
 };
 
+
+const grokLocalAdapter: ServerAdapterModule = {
+  type: "grok_local",
+  execute: grokExecute,
+  testEnvironment: grokTestEnvironment,
+  sessionCodec: grokSessionCodec,
+  models: grokModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: grokAgentConfigurationDoc,
+};
+
+const ollamaAdapter: ServerAdapterModule = {
+  type: "ollama",
+  execute: ollamaExecute,
+  testEnvironment: ollamaTestEnvironment,
+  sessionCodec: ollamaSessionCodec,
+  models: ollamaModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: ollamaAgentConfigurationDoc,
+};
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -198,6 +231,8 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    grokLocalAdapter,
+    ollamaAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),
